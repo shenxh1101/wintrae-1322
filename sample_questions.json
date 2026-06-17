@@ -1,0 +1,271 @@
+{
+  "questions": [
+    {
+      "id": "math_001",
+      "question_type": "single_choice",
+      "content": "下列哪个数是质数？",
+      "answer": "C",
+      "analysis": "质数是指在大于1的自然数中，除了1和它本身以外不再有其他因数的自然数。4有因数2，9有因数3，15有因数3和5，只有7只能被1和7整除。",
+      "knowledge_points": ["质数", "因数与倍数", "数的整除"],
+      "grade": "五年级",
+      "subject": "数学",
+      "difficulty": "easy",
+      "score": 3,
+      "options": [
+        {"key": "A", "value": "4"},
+        {"key": "B", "value": "9"},
+        {"key": "C", "value": "7"},
+        {"key": "D", "value": "15"}
+      ],
+      "tags": ["基础", "概念"]
+    },
+    {
+      "id": "math_002",
+      "question_type": "single_choice",
+      "content": "一个圆的半径是3厘米，它的面积是多少平方厘米？（π取3.14）",
+      "answer": "B",
+      "analysis": "圆的面积公式为 S=πr²，代入r=3，得 S=3.14×3²=3.14×9=28.26 平方厘米。",
+      "knowledge_points": ["圆的面积", "圆的周长与面积"],
+      "grade": "六年级",
+      "subject": "数学",
+      "difficulty": "medium",
+      "score": 4,
+      "options": [
+        {"key": "A", "value": "18.84"},
+        {"key": "B", "value": "28.26"},
+        {"key": "C", "value": "9.42"},
+        {"key": "D", "value": "6.28"}
+      ],
+      "tags": ["计算", "公式应用"]
+    },
+    {
+      "id": "math_003",
+      "question_type": "multiple_choice",
+      "content": "下列哪些图形是轴对称图形？",
+      "answer": ["A", "B", "D"],
+      "analysis": "轴对称图形是指沿一条直线对折后，直线两侧的部分能够完全重合的图形。长方形有2条对称轴，正方形有4条对称轴，等腰三角形有1条对称轴，而平行四边形没有对称轴。",
+      "knowledge_points": ["轴对称图形", "图形的变换"],
+      "grade": "五年级",
+      "subject": "数学",
+      "difficulty": "medium",
+      "score": 5,
+      "options": [
+        {"key": "A", "value": "长方形"},
+        {"key": "B", "value": "正方形"},
+        {"key": "C", "value": "平行四边形"},
+        {"key": "D", "value": "等腰三角形"},
+        {"key": "E", "value": "直角梯形"}
+      ],
+      "tags": ["几何", "概念"]
+    },
+    {
+      "id": "math_004",
+      "question_type": "multiple_choice",
+      "content": "下列说法正确的有哪些？",
+      "answer": ["A", "C"],
+      "analysis": "A正确：0既不是正数也不是负数；B错误：假分数的倒数小于或等于1（如2/2的倒数等于1）；C正确：百分数表示一个数是另一个数的百分之几；D错误：1是所有非零自然数的因数，但不是所有数的倍数。",
+      "knowledge_points": ["正数与负数", "分数", "百分数", "因数与倍数"],
+      "grade": "六年级",
+      "subject": "数学",
+      "difficulty": "hard",
+      "score": 6,
+      "options": [
+        {"key": "A", "value": "0既不是正数也不是负数"},
+        {"key": "B", "value": "假分数的倒数都小于1"},
+        {"key": "C", "value": "百分数表示两个数之间的比例关系"},
+        {"key": "D", "value": "1是所有数的因数和倍数"}
+      ],
+      "tags": ["综合", "概念辨析"]
+    },
+    {
+      "id": "math_005",
+      "question_type": "fill_blank",
+      "content": "12和18的最大公因数是___，最小公倍数是___。",
+      "answer": ["6", "36"],
+      "analysis": "用短除法：12=2×2×3，18=2×3×3。最大公因数=2×3=6，最小公倍数=2×2×3×3=36。",
+      "knowledge_points": ["最大公因数", "最小公倍数", "因数与倍数"],
+      "grade": "五年级",
+      "subject": "数学",
+      "difficulty": "easy",
+      "score": 4,
+      "blanks": 2,
+      "tags": ["计算"]
+    },
+    {
+      "id": "math_006",
+      "question_type": "fill_blank",
+      "content": "一件商品原价200元，打八折后的价格是___元，比原价便宜了___元。",
+      "answer": ["160", "40"],
+      "analysis": "八折=80%=0.8，打折后价格=200×0.8=160元，便宜了200-160=40元。",
+      "knowledge_points": ["百分数", "折扣问题", "应用题"],
+      "grade": "六年级",
+      "subject": "数学",
+      "difficulty": "medium",
+      "score": 4,
+      "blanks": 2,
+      "tags": ["应用题", "计算"]
+    },
+    {
+      "id": "math_007",
+      "question_type": "true_false",
+      "content": "两个质数相乘的积一定是合数。",
+      "answer": true,
+      "analysis": "合数是指除了1和它本身还有其他因数的数。两个质数相乘的积，除了1和积本身以外，这两个质数也是它的因数，所以一定是合数。例如2×3=6，6的因数有1、2、3、6，所以6是合数。",
+      "knowledge_points": ["质数", "合数", "因数与倍数"],
+      "grade": "五年级",
+      "subject": "数学",
+      "difficulty": "easy",
+      "score": 2,
+      "tags": ["概念", "判断"]
+    },
+    {
+      "id": "math_008",
+      "question_type": "true_false",
+      "content": "圆的周长总是它直径的3.14倍。",
+      "answer": false,
+      "analysis": "圆的周长与直径的比值是圆周率π，π是一个无限不循环小数，约等于3.1415926...，3.14只是它的近似值。所以应该说圆的周长大约是直径的3.14倍，或者说圆的周长是直径的π倍。",
+      "knowledge_points": ["圆的周长", "圆周率"],
+      "grade": "六年级",
+      "subject": "数学",
+      "difficulty": "medium",
+      "score": 2,
+      "tags": ["概念", "易错点"]
+    },
+    {
+      "id": "math_009",
+      "question_type": "short_answer",
+      "content": "小明看一本120页的故事书，第一天看了全书的1/4，第二天看了全书的1/3。请计算还剩多少页没有看？请写出解题过程。",
+      "answer": "50页",
+      "analysis": "方法一：第一天看的页数：120×1/4=30页；第二天看的页数：120×1/3=40页；剩余页数：120-30-40=50页。方法二：剩余的占全书的：1-1/4-1/3=1-3/12-4/12=5/12；剩余页数：120×5/12=50页。",
+      "knowledge_points": ["分数应用题", "分数乘法", "解决实际问题"],
+      "grade": "六年级",
+      "subject": "数学",
+      "difficulty": "medium",
+      "score": 10,
+      "grading_criterion": {
+        "keywords": ["120", "1/4", "1/3", "50"],
+        "key_points": ["计算第一天页数", "计算第二天页数", "计算剩余比例", "得出50页结果"],
+        "min_length": 20,
+        "partial_score_ratio": 0.5
+      },
+      "tags": ["应用题", "过程题"]
+    },
+    {
+      "id": "math_010",
+      "question_type": "short_answer",
+      "content": "一个长方体鱼缸，长50厘米，宽40厘米，高30厘米。(1)做这个鱼缸至少需要玻璃多少平方厘米？(无盖)(2)这个鱼缸最多能盛水多少升？请写出详细解题过程。",
+      "answer": "7400平方厘米；60升",
+      "analysis": "(1)无盖鱼缸表面积=长×宽+2×长×高+2×宽×高=50×40+2×50×30+2×40×30=2000+3000+2400=7400平方厘米。(2)容积=长×宽×高=50×40×30=60000立方厘米=60立方分米=60升。",
+      "knowledge_points": ["长方体表面积", "长方体体积", "容积", "单位换算"],
+      "grade": "五年级",
+      "subject": "数学",
+      "difficulty": "hard",
+      "score": 12,
+      "grading_criterion": {
+        "keywords": ["表面积", "体积", "7400", "60", "无盖"],
+        "key_points": ["识别无盖少一个面", "正确应用表面积公式", "正确应用体积公式", "立方厘米转升", "结果正确"],
+        "min_length": 30,
+        "partial_score_ratio": 0.4
+      },
+      "tags": ["几何", "应用题", "综合"]
+    },
+    {
+      "id": "chn_001",
+      "question_type": "single_choice",
+      "content": "下列词语中，没有错别字的一组是？",
+      "answer": "A",
+      "analysis": "B中\"再接再励\"应为\"再接再厉\"；C中\"迫不急待\"应为\"迫不及待\"；D中\"兴高彩烈\"应为\"兴高采烈\"。",
+      "knowledge_points": ["错别字辨析", "词语书写"],
+      "grade": "五年级",
+      "subject": "语文",
+      "difficulty": "easy",
+      "score": 3,
+      "options": [
+        {"key": "A", "value": "川流不息 受益匪浅"},
+        {"key": "B", "value": "再接再励 金碧辉煌"},
+        {"key": "C", "value": "迫不急待 一目了然"},
+        {"key": "D", "value": "兴高彩烈 完璧归赵"}
+      ],
+      "tags": ["字词", "基础"]
+    },
+    {
+      "id": "chn_002",
+      "question_type": "fill_blank",
+      "content": "补充完整下列古诗：___，疑是地上霜。举头望明月，___。作者是___代诗人___。",
+      "answer": ["床前明月光", "低头思故乡", "唐", "李白"],
+      "analysis": "这首诗是唐代诗人李白的《静夜思》，表达了诗人的思乡之情。",
+      "knowledge_points": ["古诗背诵", "李白", "唐诗", "静夜思"],
+      "grade": "五年级",
+      "subject": "语文",
+      "difficulty": "easy",
+      "score": 4,
+      "blanks": 4,
+      "tags": ["古诗词", "背诵"]
+    },
+    {
+      "id": "chn_003",
+      "question_type": "true_false",
+      "content": "\"的、地、得\"都读de，用法也相同。",
+      "answer": false,
+      "analysis": "\"的、地、得\"虽然都读de，但用法不同：\"的\"用在名词前（美丽的花），\"地\"用在动词前（认真地写），\"得\"用在动词或形容词后（跑得快）。",
+      "knowledge_points": ["的地得用法", "助词", "语法"],
+      "grade": "五年级",
+      "subject": "语文",
+      "difficulty": "easy",
+      "score": 2,
+      "tags": ["语法", "易错点"]
+    },
+    {
+      "id": "eng_001",
+      "question_type": "single_choice",
+      "content": "She ___ to school every day.",
+      "answer": "B",
+      "analysis": "主语She是第三人称单数，一般现在时的动词要加s/es，go的第三人称单数形式是goes。",
+      "knowledge_points": ["一般现在时", "第三人称单数", "动词形式"],
+      "grade": "五年级",
+      "subject": "英语",
+      "difficulty": "easy",
+      "score": 3,
+      "options": [
+        {"key": "A", "value": "go"},
+        {"key": "B", "value": "goes"},
+        {"key": "C", "value": "going"},
+        {"key": "D", "value": "went"}
+      ],
+      "tags": ["时态", "语法"]
+    },
+    {
+      "id": "eng_002",
+      "question_type": "multiple_choice",
+      "content": "Which of the following are fruits?",
+      "answer": ["A", "C", "D"],
+      "analysis": "apple(苹果)、banana(香蕉)、grape(葡萄)都是水果，carrot(胡萝卜)是蔬菜，bread(面包)是食品。",
+      "knowledge_points": ["词汇分类", "食物词汇"],
+      "grade": "五年级",
+      "subject": "英语",
+      "difficulty": "easy",
+      "score": 4,
+      "options": [
+        {"key": "A", "value": "apple"},
+        {"key": "B", "value": "carrot"},
+        {"key": "C", "value": "banana"},
+        {"key": "D", "value": "grape"},
+        {"key": "E", "value": "bread"}
+      ],
+      "tags": ["词汇"]
+    },
+    {
+      "id": "eng_003",
+      "question_type": "fill_blank",
+      "content": "There ___ (be) a book and two pens on the desk.",
+      "answer": "is",
+      "analysis": "There be句型遵循就近原则，靠近be动词的a book是单数，所以用is。",
+      "knowledge_points": ["There be句型", "就近原则", "be动词"],
+      "grade": "五年级",
+      "subject": "英语",
+      "difficulty": "medium",
+      "score": 3,
+      "tags": ["语法", "句型"]
+    }
+  ]
+}
