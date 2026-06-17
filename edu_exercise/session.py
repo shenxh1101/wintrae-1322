@@ -220,9 +220,15 @@ class SessionManager:
                 "closed_at": session.closed_at.isoformat() if session.closed_at else None,
                 "metadata": session.metadata,
             }
+            if session.exam_paper:
+                s_data["exam_id"] = session.exam_paper.id
+                s_data["exam_title"] = session.exam_paper.title
+                s_data["exam_total_score"] = session.exam_paper.total_score
+                s_data["exam_question_count"] = len(session.exam_paper.questions)
             if session.exam_result:
                 s_data["exam_result"] = session.exam_result.to_dict()
-                s_data["exam_id"] = session.exam_result.exam_id
+                if "exam_id" not in s_data:
+                    s_data["exam_id"] = session.exam_result.exam_id
                 s_data["total_score"] = session.exam_result.total_score
                 s_data["max_score"] = session.exam_result.max_score
                 s_data["percentage"] = session.exam_result.percentage

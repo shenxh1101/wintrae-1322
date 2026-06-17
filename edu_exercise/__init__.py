@@ -18,13 +18,35 @@ from .models import (
     PracticeSession,
 )
 from .question_bank import QuestionBank
-from .exam_builder import ExamBuilder, ExamConfig, TypeConfig, DifficultyConfig, AdaptiveBuilder, AdaptiveRationale
+from .exam_builder import (
+    ExamBuilder,
+    ExamConfig,
+    TypeConfig,
+    DifficultyConfig,
+    AdaptiveBuilder,
+    AdaptiveRationale,
+)
 from .grader import Grader
-from .analytics import Analytics, KnowledgePointStats
+from .analytics import (
+    Analytics,
+    KnowledgePointStats,
+    KnowledgePointTrend,
+    PracticePlan,
+    StudentReportRender,
+    TeacherReportRender,
+    AdvancedAnalytics,
+)
 from .exporter import Exporter
 from .session import SessionManager
+from .batch import (
+    StudentProfile,
+    BatchExamItem,
+    StudentReportSummary,
+    ClassReportSummary,
+    ClassroomManager,
+)
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
     "QuestionType",
@@ -54,6 +76,16 @@ __all__ = [
     "Grader",
     "Analytics",
     "KnowledgePointStats",
+    "KnowledgePointTrend",
+    "PracticePlan",
+    "StudentReportRender",
+    "TeacherReportRender",
+    "AdvancedAnalytics",
     "Exporter",
     "SessionManager",
+    "StudentProfile",
+    "BatchExamItem",
+    "StudentReportSummary",
+    "ClassReportSummary",
+    "ClassroomManager",
 ]

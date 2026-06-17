@@ -5,6 +5,7 @@
 
 import os
 import sys
+import json
 import unittest
 import tempfile
 from datetime import datetime, timedelta
@@ -41,6 +42,9 @@ from edu_exercise import (
     ReviewInfo,
     PracticeSession,
     SessionManager,
+    StudentProfile,
+    ClassroomManager,
+    AdvancedAnalytics,
 )
 
 
@@ -1070,6 +1074,398 @@ class TestExporterReviewAndAdaptive(unittest.TestCase):
             self.assertIn("自适应组卷说明", content)
 
 
+class TestAdaptiveBuilderAdvanced(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.builder = AdaptiveBuilder(self.bank)
+
+    def test_overall_mastery_calculation(self):
+        wrong_book = {
+            "t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=3, knowledge_points=["加法"]),
+        }
+        weak_kps = [
+            KnowledgePointStats(knowledge_point="加法", total_questions=5, correct_count=2, wrong_count=3,
+                                total_score=10, earned_score=4),
+        ]
+        paper, rationale = self.builder.build_adaptive(
+            wrong_book=wrong_book,
+            weak_knowledge_points=weak_kps,
+            total_count=6,
+            seed=42,
+        )
+        self.assertGreater(rationale.overall_mastery, 0)
+        self.assertLessEqual(rationale.overall_mastery, 100)
+
+    def test_type_strategy_reflects_mastery(self):
+        wrong_book_low = {
+            "t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=5, knowledge_points=["加法"]),
+        }
+        weak_low = [
+            KnowledgePointStats(knowledge_point="加法", total_questions=10, correct_count=2, wrong_count=8,
+                                total_score=20, earned_score=4),
+        ]
+        paper_low, r_low = self.builder.build_adaptive(
+            wrong_book=wrong_book_low, weak_knowledge_points=weak_low,
+            total_count=8, seed=42,
+        )
+        self.assertIn(r_low.type_strategy, ["基础薄弱阶段，以客观题为主，快速巩固基础概念",
+                                            "稳步提升阶段，客观题为主，适度加入主观题训练表达"])
+        self.assertIn(r_low.difficulty_strategy, ["侧重基础巩固，以简单题为主，搭配少量中等题建立信心",
+                                                 "基础与提升并重，中等难度为主，逐步提升挑战"])
+        self.assertGreater(len(r_low.type_distribution), 0)
+        self.assertGreater(len(r_low.difficulty_distribution), 0)
+
+    def test_rationale_has_reasons(self):
+        wrong_book = {
+            "t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=2, knowledge_points=["加法"]),
+        }
+        weak_kps = [
+            KnowledgePointStats(knowledge_point="加法", total_questions=5, correct_count=3, wrong_count=2,
+                                total_score=10, earned_score=6),
+        ]
+        paper, rationale = self.builder.build_adaptive(
+            wrong_book=wrong_book,
+            weak_knowledge_points=weak_kps,
+            total_count=5,
+            seed=42,
+        )
+        self.assertGreater(len(rationale.type_reason), 0)
+        self.assertGreater(len(rationale.difficulty_reason), 0)
+        self.assertIn("加法", rationale.knowledge_point_allocations)
+        alloc = rationale.knowledge_point_allocations["加法"]
+        self.assertIn("reason", alloc)
+        self.assertIn("mastery", alloc)
+
+    def test_kp_allocation_has_type_and_diff_counts(self):
+        wrong_book = {
+            "t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=2, knowledge_points=["加法"]),
+        }
+        weak_kps = []
+        paper, rationale = self.builder.build_adaptive(
+            wrong_book=wrong_book,
+            weak_knowledge_points=weak_kps,
+            total_count=5,
+            seed=42,
+        )
+        alloc = rationale.knowledge_point_allocations.get("加法", {})
+        self.assertIn("objective_count", alloc)
+        self.assertIn("subjective_count", alloc)
+        self.assertIn("easy_count", alloc)
+        self.assertIn("medium_count", alloc)
+        self.assertIn("hard_count", alloc)
+
+
+class TestSessionResume(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.builder = ExamBuilder(self.bank)
+        self.mgr = SessionManager()
+        self.grader = Grader()
+
+    def test_ungraded_session_persistence_with_paper(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1", "t_tf_1"], title="恢复测试")
+        session = self.mgr.create_session("stu_1", exam)
+        self.mgr.submit_answer(session.id, "t_sc_1", "B")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+            tmp_path = f.name
+        try:
+            self.mgr.save_to_json(tmp_path)
+
+            mgr2 = SessionManager()
+            exam_papers = {exam.id: exam}
+            mgr2.load_from_json(tmp_path, exam_papers)
+
+            loaded = mgr2.get_session(session.id)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.student_id, "stu_1")
+            self.assertEqual(loaded.status, "answering")
+            self.assertIsNotNone(loaded.exam_paper)
+            self.assertEqual(loaded.exam_paper.id, exam.id)
+            self.assertEqual(loaded.exam_paper.title, "恢复测试")
+            self.assertIn("t_sc_1", loaded.answers)
+            self.assertEqual(loaded.answers["t_sc_1"], "B")
+        finally:
+            os.unlink(tmp_path)
+
+    def test_resume_continue_answering(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1", "t_tf_1"], title="继续作答")
+        session = self.mgr.create_session("stu_2", exam)
+        self.mgr.submit_answer(session.id, "t_sc_1", "B")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+            tmp_path = f.name
+        try:
+            self.mgr.save_to_json(tmp_path)
+            mgr2 = SessionManager()
+            mgr2.load_from_json(tmp_path, {exam.id: exam})
+            loaded = mgr2.get_session(session.id)
+            self.assertEqual(loaded.status, "answering")
+
+            mgr2.submit_answer(session.id, "t_tf_1", True)
+            result = mgr2.grade_session(session.id)
+            self.assertEqual(loaded.status, "graded")
+            self.assertEqual(result.correct_count, 2)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_save_preserves_exam_id_for_ungraded(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1"], title="未批改保存")
+        session = self.mgr.create_session("stu_3", exam)
+        self.mgr.start_answering(session.id)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+            tmp_path = f.name
+        try:
+            self.mgr.save_to_json(tmp_path)
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertEqual(len(data), 1)
+            self.assertIn("exam_id", data[0])
+            self.assertEqual(data[0]["exam_id"], exam.id)
+            self.assertIn("exam_title", data[0])
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestClassroomManager(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.classroom = ClassroomManager(self.bank)
+
+    def test_add_students(self):
+        p1 = StudentProfile(student_id="s1", student_name="小明", grade="三年级", class_id="一班")
+        p2 = StudentProfile(student_id="s2", student_name="小红", grade="三年级", class_id="一班")
+        self.classroom.add_students([p1, p2])
+        self.assertEqual(self.classroom.get_student("s1").student_name, "小明")
+        self.assertIsNotNone(self.classroom.get_student("s2"))
+
+    def test_batch_generate_adaptive(self):
+        p1 = StudentProfile(student_id="s1", student_name="小明", grade="三年级", class_id="一班")
+        p2 = StudentProfile(student_id="s2", student_name="小红", grade="三年级", class_id="一班",
+                            wrong_book={"t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=2, knowledge_points=["加法"])})
+        self.classroom.add_students([p1, p2])
+
+        bid, items = self.classroom.batch_generate_adaptive(
+            total_count=5,
+            subject="数学",
+            class_id="一班",
+            seed=42,
+        )
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0].student_id, "s1")
+        self.assertIsNotNone(items[0].exam_paper)
+        self.assertIsNotNone(items[0].session_id)
+        self.assertIsNotNone(items[0].rationale)
+
+    def test_batch_import_and_grade(self):
+        p1 = StudentProfile(student_id="s1", student_name="小明", grade="三年级")
+        p2 = StudentProfile(student_id="s2", student_name="小红", grade="三年级")
+        self.classroom.add_students([p1, p2])
+
+        bid, items = self.classroom.batch_generate_adaptive(
+            total_count=4,
+            subject="数学",
+            seed=42,
+        )
+
+        answers_dict = {}
+        for item in items:
+            q_answers = {}
+            for q in item.exam_paper.questions:
+                if q.question_type == QuestionType.SINGLE_CHOICE:
+                    q_answers[q.id] = "B"
+                elif q.question_type == QuestionType.TRUE_FALSE:
+                    q_answers[q.id] = True
+                elif q.question_type == QuestionType.MULTIPLE_CHOICE:
+                    q_answers[q.id] = ["A", "B"]
+                elif q.question_type == QuestionType.FILL_BLANK:
+                    q_answers[q.id] = "6"
+                else:
+                    q_answers[q.id] = "测试答案"
+            answers_dict[item.student_id] = q_answers
+
+        sessions = self.classroom.batch_import_answers(bid, answers_dict)
+        self.assertEqual(len(sessions), 2)
+
+        results = self.classroom.batch_grade(bid)
+        self.assertEqual(len(results), 2)
+        self.assertIn("s1", results)
+        self.assertIn("s2", results)
+
+    def test_generate_class_report(self):
+        p1 = StudentProfile(student_id="s1", student_name="小明", grade="三年级")
+        p2 = StudentProfile(student_id="s2", student_name="小红", grade="三年级")
+        p3 = StudentProfile(student_id="s3", student_name="小刚", grade="三年级")
+        self.classroom.add_students([p1, p2, p3])
+
+        bid, items = self.classroom.batch_generate_adaptive(
+            total_count=4,
+            subject="数学",
+            seed=42,
+        )
+
+        answers_dict = {}
+        for item in items:
+            q_answers = {}
+            for q in item.exam_paper.questions:
+                if q.question_type == QuestionType.SINGLE_CHOICE:
+                    q_answers[q.id] = "B"
+                elif q.question_type == QuestionType.TRUE_FALSE:
+                    q_answers[q.id] = True
+                elif q.question_type == QuestionType.MULTIPLE_CHOICE:
+                    q_answers[q.id] = ["A", "B"]
+                elif q.question_type == QuestionType.FILL_BLANK:
+                    q_answers[q.id] = "6"
+                else:
+                    q_answers[q.id] = "测试"
+            answers_dict[item.student_id] = q_answers
+
+        self.classroom.batch_import_answers(bid, answers_dict)
+        self.classroom.batch_grade(bid)
+
+        report = self.classroom.generate_class_report(bid, class_id="一班")
+        self.assertEqual(report.student_count, 3)
+        self.assertEqual(report.class_id, "一班")
+        self.assertGreater(report.average_score, 0)
+        self.assertGreaterEqual(len(report.student_reports), 2)
+        self.assertIsNotNone(report.student_reports[0].rank)
+        self.assertEqual(report.student_reports[0].rank, 1)
+        self.assertIn("grade_distribution", report.to_dict())
+        self.assertGreater(len(report.to_dict()), 0)
+
+
+class TestAdvancedAnalytics(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.analytics = AdvancedAnalytics(self.bank)
+        self.grader = Grader()
+        self.builder = ExamBuilder(self.bank)
+
+    def _make_result(self, score_pct=0.8, seed=0):
+        exam = self.builder.quick_build(count=5, subject="数学", grade="三年级", seed=seed)
+        answers = []
+        for q in exam.questions:
+            if q.question_type == QuestionType.SINGLE_CHOICE:
+                ans = "B"
+            elif q.question_type == QuestionType.TRUE_FALSE:
+                ans = True
+            elif q.question_type == QuestionType.MULTIPLE_CHOICE:
+                ans = ["A", "B"]
+            elif q.question_type == QuestionType.FILL_BLANK:
+                ans = "6"
+            else:
+                ans = "测试答案"
+            answers.append(StudentAnswer(q.id, ans))
+        return self.grader.grade_exam(exam, answers, "stu_test")
+
+    def test_compare_knowledge_points_trend(self):
+        prev = [self._make_result(0.5, seed=1)]
+        curr = [self._make_result(0.9, seed=2)]
+        trends = self.analytics.compare_knowledge_points_trend(prev, curr)
+        self.assertGreater(len(trends), 0)
+        for t in trends:
+            self.assertIn(t.trend, ["improving", "declining", "stable"])
+            self.assertIsInstance(t.change, float)
+            self.assertEqual(t.current_mastery >= 0, True)
+
+    def test_generate_next_practice_plan(self):
+        results = [self._make_result(0.6, seed=1)]
+        plan = self.analytics.generate_next_practice_plan(results, total_count=8)
+        self.assertEqual(plan.total_count, 8)
+        self.assertIn("easy", plan.difficulty_weights)
+        self.assertIn("medium", plan.difficulty_weights)
+        self.assertIn("hard", plan.difficulty_weights)
+        self.assertIn("objective", plan.type_ratio)
+        self.assertIn("subjective", plan.type_ratio)
+        self.assertGreater(len(plan.suggestions), 0)
+        self.assertGreater(len(plan.expected_effect), 0)
+
+    def test_generate_next_practice_plan_with_previous(self):
+        prev = [self._make_result(0.5, seed=1)]
+        curr = [self._make_result(0.8, seed=2)]
+        plan = self.analytics.generate_next_practice_plan(curr, previous_results=prev)
+        self.assertGreater(len(plan.focus_knowledge_points), 0)
+        self.assertGreater(len(plan.suggestions), 0)
+
+    def test_build_student_report(self):
+        result = self._make_result(0.7, seed=1)
+        report = self.analytics.build_student_report(
+            result,
+            exam_title="单元测试",
+            student_name="测试学生",
+            rank=3,
+        )
+        self.assertEqual(report.student_id, "stu_test")
+        self.assertEqual(report.student_name, "测试学生")
+        self.assertEqual(report.exam_title, "单元测试")
+        self.assertEqual(report.rank, 3)
+        self.assertGreater(len(report.grade_level), 0)
+        self.assertGreater(len(report.grade_tips), 0)
+        self.assertGreater(len(report.study_suggestions), 0)
+        self.assertIsNotNone(report.next_practice_plan)
+        self.assertIsInstance(report.to_dict(), dict)
+
+    def test_build_student_report_with_previous(self):
+        prev = self._make_result(0.5, seed=1)
+        curr = self._make_result(0.8, seed=2)
+        report = self.analytics.build_student_report(
+            curr,
+            exam_title="测试",
+            previous_results=[prev],
+        )
+        self.assertGreater(len(report.knowledge_point_trends), 0)
+
+    def test_build_teacher_report(self):
+        results = [
+            self._make_result(0.9, seed=1),
+            self._make_result(0.7, seed=2),
+            self._make_result(0.5, seed=3),
+        ]
+        report = self.analytics.build_teacher_report(
+            results,
+            class_id="一班",
+            subject="数学",
+            exam_title="周测",
+        )
+        self.assertEqual(report.student_count, 3)
+        self.assertEqual(report.class_id, "一班")
+        self.assertEqual(report.subject, "数学")
+        self.assertGreater(report.average_score, 0)
+        self.assertGreater(len(report.grade_distribution), 0)
+        self.assertGreater(len(report.top_students), 0)
+        self.assertGreater(len(report.bottom_students), 0)
+        self.assertGreater(len(report.teacher_actions), 0)
+        self.assertIsInstance(report.to_dict(), dict)
+
+    def test_knowledge_point_trend_to_dict(self):
+        from edu_exercise.analytics import KnowledgePointTrend
+        kt = KnowledgePointTrend(
+            knowledge_point="加法",
+            previous_mastery=60.0,
+            current_mastery=75.0,
+            change=15.0,
+            trend="improving",
+        )
+        d = kt.to_dict()
+        self.assertEqual(d["knowledge_point"], "加法")
+        self.assertEqual(d["change"], 15.0)
+        self.assertEqual(d["trend"], "improving")
+
+    def test_practice_plan_to_dict(self):
+        from edu_exercise.analytics import PracticePlan
+        plan = PracticePlan(
+            total_count=10,
+            difficulty_weights={"easy": 0.5, "medium": 0.5},
+            type_ratio={"objective": 0.7},
+            suggestions=["多练习基础"],
+            expected_effect="巩固基础",
+        )
+        d = plan.to_dict()
+        self.assertEqual(d["total_count"], 10)
+        self.assertIn("difficulty_weights", d)
+
+
 def run_tests():
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -1088,6 +1484,10 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSessionManager))
     suite.addTests(loader.loadTestsFromTestCase(TestAnalyticsReview))
     suite.addTests(loader.loadTestsFromTestCase(TestExporterReviewAndAdaptive))
+    suite.addTests(loader.loadTestsFromTestCase(TestAdaptiveBuilderAdvanced))
+    suite.addTests(loader.loadTestsFromTestCase(TestSessionResume))
+    suite.addTests(loader.loadTestsFromTestCase(TestClassroomManager))
+    suite.addTests(loader.loadTestsFromTestCase(TestAdvancedAnalytics))
 
     runner = unittest.TextTestRunner(verbosity=2)
     return runner.run(suite)

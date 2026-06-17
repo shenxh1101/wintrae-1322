@@ -420,6 +420,34 @@ class Analytics:
             "suggestions": self._generate_suggestions(weak_kps, type_stats, history_comparison),
         }
 
+    def generate_study_suggestions(
+        self,
+        wrong_questions: List[WrongQuestion],
+        weak_knowledge_points: List[KnowledgePointStats],
+        total_score: float,
+        max_score: float,
+    ) -> List[str]:
+        suggestions = []
+        percentage = (total_score / max_score * 100) if max_score > 0 else 0
+
+        if weak_knowledge_points:
+            kp_names = "、".join([kp.knowledge_point for kp in weak_knowledge_points[:5]])
+            suggestions.append(f"重点加强薄弱知识点：{kp_names}，建议进行针对性练习。")
+
+        if wrong_questions:
+            suggestions.append(f"本次共有{len(wrong_questions)}道错题，建议整理错题本，定期复习巩固。")
+
+        if percentage >= 90:
+            suggestions.append("整体掌握良好，可以尝试更高难度的综合题，拓展解题思路。")
+        elif percentage >= 70:
+            suggestions.append("基础掌握不错，建议适当增加综合题练习，提升知识应用能力。")
+        elif percentage >= 60:
+            suggestions.append("基础有待加强，建议多做基础题，巩固核心概念和公式。")
+        else:
+            suggestions.append("基础较为薄弱，建议从基础题开始，循序渐进，逐步提升。")
+
+        return suggestions
+
     def _generate_suggestions(
         self,
         weak_kps: List[KnowledgePointStats],
@@ -515,3 +543,445 @@ class Analytics:
             "effective_score_rate": round(effective_score_sum / max_score_sum * 100, 2) if max_score_sum > 0 else 0,
             "review_adjustment": round(effective_score_sum - auto_score_sum, 2),
         }
+
+
+@dataclass
+class KnowledgePointTrend:
+    knowledge_point: str
+    previous_mastery: float = 0.0
+    current_mastery: float = 0.0
+    change: float = 0.0
+    previous_count: int = 0
+    current_count: int = 0
+    trend: str = "stable"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "knowledge_point": self.knowledge_point,
+            "previous_mastery": self.previous_mastery,
+            "current_mastery": self.current_mastery,
+            "change": self.change,
+            "previous_count": self.previous_count,
+            "current_count": self.current_count,
+            "trend": self.trend,
+        }
+
+
+@dataclass
+class PracticePlan:
+    total_count: int = 10
+    difficulty_weights: Dict[str, float] = field(default_factory=dict)
+    type_ratio: Dict[str, float] = field(default_factory=dict)
+    focus_knowledge_points: List[str] = field(default_factory=list)
+    review_knowledge_points: List[str] = field(default_factory=list)
+    suggestions: List[str] = field(default_factory=list)
+    expected_effect: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "total_count": self.total_count,
+            "difficulty_weights": self.difficulty_weights,
+            "type_ratio": self.type_ratio,
+            "focus_knowledge_points": self.focus_knowledge_points,
+            "review_knowledge_points": self.review_knowledge_points,
+            "suggestions": self.suggestions,
+            "expected_effect": self.expected_effect,
+        }
+
+
+@dataclass
+class StudentReportRender:
+    student_id: str
+    student_name: str
+    exam_title: str
+    total_score: float
+    max_score: float
+    percentage: float
+    grade_level: str
+    rank: Optional[int] = None
+    correct_count: int = 0
+    wrong_count: int = 0
+    pending_review_count: int = 0
+    time_spent_seconds: Optional[int] = None
+    knowledge_point_trends: List[KnowledgePointTrend] = field(default_factory=list)
+    strong_points: List[str] = field(default_factory=list)
+    weak_points: List[str] = field(default_factory=list)
+    wrong_question_ids: List[str] = field(default_factory=list)
+    review_adjustment: float = 0.0
+    study_suggestions: List[str] = field(default_factory=list)
+    next_practice_plan: Optional[PracticePlan] = None
+    grade_tips: str = ""
+    report_generated_at: datetime = field(default_factory=datetime.now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "student_id": self.student_id,
+            "student_name": self.student_name,
+            "exam_title": self.exam_title,
+            "total_score": self.total_score,
+            "max_score": self.max_score,
+            "percentage": self.percentage,
+            "grade_level": self.grade_level,
+            "rank": self.rank,
+            "correct_count": self.correct_count,
+            "wrong_count": self.wrong_count,
+            "pending_review_count": self.pending_review_count,
+            "time_spent_seconds": self.time_spent_seconds,
+            "knowledge_point_trends": [k.to_dict() for k in self.knowledge_point_trends],
+            "strong_points": self.strong_points,
+            "weak_points": self.weak_points,
+            "wrong_question_ids": self.wrong_question_ids,
+            "review_adjustment": self.review_adjustment,
+            "study_suggestions": self.study_suggestions,
+            "next_practice_plan": self.next_practice_plan.to_dict() if self.next_practice_plan else None,
+            "grade_tips": self.grade_tips,
+            "report_generated_at": self.report_generated_at.isoformat(),
+        }
+
+
+@dataclass
+class TeacherReportRender:
+    class_id: Optional[str]
+    subject: Optional[str]
+    exam_title: str
+    student_count: int
+    average_score: float
+    max_score: float
+    min_score: float
+    pass_rate: float
+    excellent_rate: float
+    grade_distribution: Dict[str, int] = field(default_factory=dict)
+    class_strong_points: List[str] = field(default_factory=list)
+    class_weak_points: List[str] = field(default_factory=list)
+    top_students: List[Dict[str, Any]] = field(default_factory=list)
+    bottom_students: List[Dict[str, Any]] = field(default_factory=list)
+    review_pending_count: int = 0
+    review_adjustment_avg: float = 0.0
+    teacher_actions: List[str] = field(default_factory=list)
+    report_generated_at: datetime = field(default_factory=datetime.now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "class_id": self.class_id,
+            "subject": self.subject,
+            "exam_title": self.exam_title,
+            "student_count": self.student_count,
+            "average_score": round(self.average_score, 2),
+            "max_score": round(self.max_score, 2),
+            "min_score": round(self.min_score, 2),
+            "pass_rate": round(self.pass_rate, 2),
+            "excellent_rate": round(self.excellent_rate, 2),
+            "grade_distribution": self.grade_distribution,
+            "class_strong_points": self.class_strong_points,
+            "class_weak_points": self.class_weak_points,
+            "top_students": self.top_students,
+            "bottom_students": self.bottom_students,
+            "review_pending_count": self.review_pending_count,
+            "review_adjustment_avg": round(self.review_adjustment_avg, 2),
+            "teacher_actions": self.teacher_actions,
+            "report_generated_at": self.report_generated_at.isoformat(),
+        }
+
+
+class AdvancedAnalytics(Analytics):
+    def compare_knowledge_points_trend(
+        self,
+        previous_results: List[ExamResult],
+        current_results: List[ExamResult],
+    ) -> List[KnowledgePointTrend]:
+        prev_stats = self.analyze_knowledge_points(previous_results)
+        curr_stats = self.analyze_knowledge_points(current_results)
+
+        prev_map = {s.knowledge_point: s for s in prev_stats}
+        curr_map = {s.knowledge_point: s for s in curr_stats}
+
+        all_kps = set(list(prev_map.keys()) + list(curr_map.keys()))
+        trends: List[KnowledgePointTrend] = []
+
+        for kp in all_kps:
+            prev = prev_map.get(kp)
+            curr = curr_map.get(kp)
+            prev_mastery = prev.mastery_level if prev else 0.0
+            curr_mastery = curr.mastery_level if curr else 0.0
+            prev_count = prev.total_questions if prev else 0
+            curr_count = curr.total_questions if curr else 0
+            change = round(curr_mastery - prev_mastery, 2)
+
+            if change > 5:
+                trend = "improving"
+            elif change < -5:
+                trend = "declining"
+            else:
+                trend = "stable"
+
+            trends.append(KnowledgePointTrend(
+                knowledge_point=kp,
+                previous_mastery=prev_mastery,
+                current_mastery=curr_mastery,
+                change=change,
+                previous_count=prev_count,
+                current_count=curr_count,
+                trend=trend,
+            ))
+
+        trends.sort(key=lambda t: t.change, reverse=True)
+        return trends
+
+    def generate_next_practice_plan(
+        self,
+        current_results: List[ExamResult],
+        previous_results: Optional[List[ExamResult]] = None,
+        total_count: int = 10,
+    ) -> PracticePlan:
+        kp_stats = self.analyze_knowledge_points(current_results)
+        weak_kps = self.get_weak_knowledge_points(current_results)
+
+        trends: List[KnowledgePointTrend] = []
+        if previous_results:
+            trends = self.compare_knowledge_points_trend(previous_results, current_results)
+
+        declining_kps = [t.knowledge_point for t in trends if t.trend == "declining"]
+        improving_kps = [t.knowledge_point for t in trends if t.trend == "improving"]
+
+        weak_kp_names = [kp.knowledge_point for kp in weak_kps[:5]]
+        strong_kp_names = [kp.knowledge_point for kp in kp_stats if kp.mastery_level >= 80][:3]
+
+        avg_score = 0.0
+        total_max = 0.0
+        for er in current_results:
+            avg_score += er.total_score
+            total_max += er.max_score
+        avg_percentage = (avg_score / total_max * 100) if total_max > 0 else 0.0
+
+        if avg_percentage < 40:
+            diff_weights = {"easy": 0.6, "medium": 0.3, "hard": 0.1}
+            type_ratio = {"objective": 0.9, "subjective": 0.1}
+            expected = "聚焦基础概念巩固，通过大量客观题快速建立信心"
+        elif avg_percentage < 70:
+            diff_weights = {"easy": 0.3, "medium": 0.5, "hard": 0.2}
+            type_ratio = {"objective": 0.7, "subjective": 0.3}
+            expected = "巩固基础的同时提升中等难度题目，逐步加入主观题训练"
+        elif avg_percentage < 90:
+            diff_weights = {"easy": 0.15, "medium": 0.55, "hard": 0.3}
+            type_ratio = {"objective": 0.5, "subjective": 0.5}
+            expected = "中等和较难题并重，强化知识迁移与综合应用能力"
+        else:
+            diff_weights = {"easy": 0.05, "medium": 0.35, "hard": 0.6}
+            type_ratio = {"objective": 0.3, "subjective": 0.7}
+            expected = "挑战高难度综合题，侧重深度理解与拓展应用"
+
+        suggestions = []
+        if weak_kp_names:
+            suggestions.append(f"重点突破薄弱知识点：{', '.join(weak_kp_names[:3])}")
+        if declining_kps:
+            suggestions.append(f"特别关注退步知识点：{', '.join(declining_kps[:3])}")
+        if strong_kp_names:
+            suggestions.append(f"继续保持优势知识点：{', '.join(strong_kp_names)}")
+        if improving_kps:
+            suggestions.append(f"进步明显，继续保持：{', '.join(improving_kps[:3])}")
+        if avg_percentage < 60:
+            suggestions.append("建议每天至少练习 15 分钟，从基础题入手逐步提升")
+        elif avg_percentage < 85:
+            suggestions.append("建议每周 3-4 次练习，适量增加中等难度题目")
+        else:
+            suggestions.append("基础扎实，可以挑战更多综合应用题和拓展题")
+
+        review_kps = declining_kps + [kp for kp in weak_kp_names if kp not in declining_kps]
+
+        return PracticePlan(
+            total_count=total_count,
+            difficulty_weights=diff_weights,
+            type_ratio=type_ratio,
+            focus_knowledge_points=weak_kp_names,
+            review_knowledge_points=review_kps,
+            suggestions=suggestions,
+            expected_effect=expected,
+        )
+
+    def build_student_report(
+        self,
+        exam_result: ExamResult,
+        exam_title: str = "",
+        student_name: str = "",
+        previous_results: Optional[List[ExamResult]] = None,
+        rank: Optional[int] = None,
+    ) -> StudentReportRender:
+        er = exam_result
+
+        kp_stats = self.analyze_knowledge_points([er])
+        weak_kps = self.get_weak_knowledge_points([er])
+        wrong_q = self.collect_wrong_questions([er])
+
+        strong_points = [kp.knowledge_point for kp in kp_stats if kp.mastery_level >= 80]
+        weak_points = [kp.knowledge_point for kp in weak_kps[:5]]
+        wrong_ids = list(wrong_q.keys())
+
+        review_stats = self.analyze_review_status([er])
+
+        trends = []
+        if previous_results:
+            trends = self.compare_knowledge_points_trend(previous_results, [er])
+
+        suggestions = self.generate_study_suggestions(
+            wrong_questions=wrong_q,
+            weak_knowledge_points=weak_kps,
+            total_score=er.total_score,
+            max_score=er.max_score,
+        )
+
+        next_plan = self.generate_next_practice_plan([er], previous_results)
+
+        grade_level = self._grade_level(er.percentage)
+        grade_tips = self._grade_tips(er.percentage)
+
+        return StudentReportRender(
+            student_id=er.student_id,
+            student_name=student_name or er.student_id,
+            exam_title=exam_title,
+            total_score=er.total_score,
+            max_score=er.max_score,
+            percentage=er.percentage,
+            grade_level=grade_level,
+            rank=rank,
+            correct_count=er.correct_count,
+            wrong_count=er.wrong_count,
+            pending_review_count=review_stats["pending_review"],
+            time_spent_seconds=er.time_spent_seconds,
+            knowledge_point_trends=trends,
+            strong_points=strong_points,
+            weak_points=weak_points,
+            wrong_question_ids=wrong_ids,
+            review_adjustment=review_stats["review_adjustment"],
+            study_suggestions=suggestions,
+            next_practice_plan=next_plan,
+            grade_tips=grade_tips,
+        )
+
+    def build_teacher_report(
+        self,
+        exam_results: List[ExamResult],
+        class_id: Optional[str] = None,
+        subject: Optional[str] = None,
+        exam_title: str = "班级练习报告",
+        pass_line: float = 60.0,
+        excellent_line: float = 90.0,
+        top_n: int = 5,
+        bottom_n: int = 5,
+    ) -> TeacherReportRender:
+        n = len(exam_results)
+        if n == 0:
+            return TeacherReportRender(
+                class_id=class_id, subject=subject, exam_title=exam_title,
+                student_count=0, average_score=0, max_score=0, min_score=0,
+                pass_rate=0, excellent_rate=0,
+            )
+
+        scores = [er.percentage for er in exam_results]
+        avg_score = sum(scores) / n
+        max_s = max(scores)
+        min_s = min(scores)
+        pass_r = sum(1 for s in scores if s >= pass_line) / n * 100
+        excellent_r = sum(1 for s in scores if s >= excellent_line) / n * 100
+
+        grade_dist = {"优秀": 0, "良好": 0, "中等": 0, "及格": 0, "不及格": 0}
+        for s in scores:
+            grade_dist[self._grade_level(s)] += 1
+
+        all_kp_stats = {}
+        total_review_pending = 0
+        total_review_adj = 0.0
+
+        for er in exam_results:
+            kp_stats = self.analyze_knowledge_points([er])
+            for ks in kp_stats:
+                if ks.knowledge_point not in all_kp_stats:
+                    all_kp_stats[ks.knowledge_point] = []
+                all_kp_stats[ks.knowledge_point].append(ks.mastery_level)
+            review_s = self.analyze_review_status([er])
+            total_review_pending += review_s["pending_review"]
+            total_review_adj += review_s["review_adjustment"]
+
+        avg_mastery = []
+        for kp, levels in all_kp_stats.items():
+            avg_mastery.append((kp, sum(levels) / len(levels)))
+        avg_mastery.sort(key=lambda x: x[1], reverse=True)
+
+        class_strong = [kp for kp, m in avg_mastery[:3] if m >= 70]
+        class_weak = [kp for kp, m in avg_mastery[-3:] if m < 70]
+
+        sorted_results = sorted(exam_results, key=lambda er: er.percentage, reverse=True)
+        top_students = []
+        for i, er in enumerate(sorted_results[:top_n]):
+            top_students.append({
+                "rank": i + 1,
+                "student_id": er.student_id,
+                "score": er.total_score,
+                "percentage": er.percentage,
+                "grade_level": self._grade_level(er.percentage),
+            })
+
+        bottom_students = []
+        for er in sorted_results[-bottom_n:]:
+            bottom_students.append({
+                "student_id": er.student_id,
+                "score": er.total_score,
+                "percentage": er.percentage,
+                "grade_level": self._grade_level(er.percentage),
+            })
+
+        actions = []
+        if class_weak:
+            actions.append(f"班级薄弱知识点：{', '.join(class_weak)}，建议集中讲解和专项训练")
+        if pass_r < 80:
+            actions.append(f"及格率仅 {pass_r:.1f}%，建议对 {int(n * (1-pass_r/100))} 名未达标学生进行个别辅导")
+        if total_review_pending > 0:
+            actions.append(f"待人工复核题目 {total_review_pending} 道，请及时完成批改")
+        if total_review_adj != 0:
+            direction = "加分" if total_review_adj > 0 else "减分"
+            actions.append(f"复核后累计调整 {abs(total_review_adj):.1f} 分（{direction}），需关注评分标准一致性")
+        if class_strong:
+            actions.append(f"班级优势知识点：{', '.join(class_strong)}，可安排拓展提升")
+
+        return TeacherReportRender(
+            class_id=class_id,
+            subject=subject,
+            exam_title=exam_title,
+            student_count=n,
+            average_score=avg_score,
+            max_score=max_s,
+            min_score=min_s,
+            pass_rate=pass_r,
+            excellent_rate=excellent_r,
+            grade_distribution=grade_dist,
+            class_strong_points=class_strong,
+            class_weak_points=class_weak,
+            top_students=top_students,
+            bottom_students=bottom_students,
+            review_pending_count=total_review_pending,
+            review_adjustment_avg=total_review_adj / n if n > 0 else 0,
+            teacher_actions=actions,
+        )
+
+    def _grade_level(self, percentage: float) -> str:
+        if percentage >= 90:
+            return "优秀"
+        elif percentage >= 80:
+            return "良好"
+        elif percentage >= 70:
+            return "中等"
+        elif percentage >= 60:
+            return "及格"
+        else:
+            return "不及格"
+
+    def _grade_tips(self, percentage: float) -> str:
+        if percentage >= 95:
+            return "太棒了！你已经掌握得非常扎实，继续保持并挑战更高难度！"
+        elif percentage >= 85:
+            return "表现优秀！继续巩固薄弱知识点，冲击满分吧！"
+        elif percentage >= 75:
+            return "成绩良好，再努力一把就能达到优秀！"
+        elif percentage >= 60:
+            return "及格了，但还有提升空间，重点复习错题和薄弱知识点。"
+        else:
+            return "别灰心，从基础开始，每天进步一点点，一定能赶上来！"

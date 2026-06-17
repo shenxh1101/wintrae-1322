@@ -1,6 +1,6 @@
 import uuid
 import random
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from .models import (
     Question,
@@ -265,6 +265,7 @@ class ExamBuilder:
         difficulty: Optional[Difficulty] = None,
         subject: Optional[str] = None,
         title: Optional[str] = None,
+        seed: Optional[int] = None,
     ) -> ExamPaper:
         type_configs = None
         if question_type:
@@ -282,6 +283,7 @@ class ExamBuilder:
             subjects=[subject] if subject else None,
             type_configs=type_configs,
             difficulty_configs=diff_configs,
+            seed=seed,
         )
         return self.build(config)
 
@@ -289,22 +291,108 @@ class ExamBuilder:
 @dataclass
 class AdaptiveRationale:
     knowledge_point_allocations: Dict[str, Dict] = field(default_factory=dict)
+    difficulty_distribution: Dict[str, int] = field(default_factory=dict)
     difficulty_strategy: str = ""
+    difficulty_reason: str = ""
     type_distribution: Dict[str, int] = field(default_factory=dict)
+    type_strategy: str = ""
+    type_reason: str = ""
+    overall_mastery: float = 0.0
     summary: str = ""
 
     def to_dict(self) -> Dict:
         return {
             "knowledge_point_allocations": self.knowledge_point_allocations,
+            "difficulty_distribution": self.difficulty_distribution,
             "difficulty_strategy": self.difficulty_strategy,
+            "difficulty_reason": self.difficulty_reason,
             "type_distribution": self.type_distribution,
+            "type_strategy": self.type_strategy,
+            "type_reason": self.type_reason,
+            "overall_mastery": self.overall_mastery,
             "summary": self.summary,
         }
 
 
 class AdaptiveBuilder:
+    OBJECTIVE_TYPES = {
+        QuestionType.SINGLE_CHOICE,
+        QuestionType.MULTIPLE_CHOICE,
+        QuestionType.TRUE_FALSE,
+        QuestionType.FILL_BLANK,
+    }
+    SUBJECTIVE_TYPES = {QuestionType.SHORT_ANSWER}
+
     def __init__(self, question_bank: QuestionBank):
         self._bank = question_bank
+
+    def _compute_overall_mastery(
+        self,
+        wrong_kps: Dict[str, int],
+        weak_kp_mastery: Dict[str, float],
+    ) -> float:
+        if not weak_kp_mastery and not wrong_kps:
+            return 60.0
+        total_weight = 0.0
+        weighted_sum = 0.0
+        all_kps = set(list(wrong_kps.keys()) + list(weak_kp_mastery.keys()))
+        for kp in all_kps:
+            w = 1.0
+            if kp in wrong_kps:
+                w += wrong_kps[kp] * 0.5
+            mastery = weak_kp_mastery.get(kp)
+            if mastery is None:
+                mastery = max(30.0, 80.0 - wrong_kps.get(kp, 0) * 10)
+            weighted_sum += mastery * w
+            total_weight += w
+        return round(weighted_sum / total_weight, 2) if total_weight > 0 else 60.0
+
+    def _get_type_strategy(self, overall_mastery: float) -> Dict[str, Any]:
+        if overall_mastery < 40:
+            objective_ratio = 0.9
+            label = "基础薄弱阶段，以客观题为主，快速巩固基础概念"
+            reason = f"整体掌握度 {overall_mastery:.0f}% < 40%，客观题占比 90%，便于集中强化基础知识点"
+        elif overall_mastery < 70:
+            objective_ratio = 0.7
+            label = "稳步提升阶段，客观题为主，适度加入主观题训练表达"
+            reason = f"整体掌握度 {overall_mastery:.0f}%（40%-70%），客观题占比 70%，搭配主观题练习解题思路"
+        elif overall_mastery < 90:
+            objective_ratio = 0.5
+            label = "进阶巩固阶段，客观题与主观题并重，训练综合应用"
+            reason = f"整体掌握度 {overall_mastery:.0f}%（70%-90%），客观题与主观题各占 50%，强化知识迁移与表达"
+        else:
+            objective_ratio = 0.3
+            label = "优秀拓展阶段，以主观题为主，挑战综合应用与深度理解"
+            reason = f"整体掌握度 {overall_mastery:.0f}% ≥ 90%，主观题占比 70%，侧重综合分析与深度解答"
+        return {
+            "objective_ratio": objective_ratio,
+            "subjective_ratio": 1 - objective_ratio,
+            "label": label,
+            "reason": reason,
+        }
+
+    def _get_difficulty_strategy(self, overall_mastery: float) -> Dict[str, Any]:
+        if overall_mastery < 40:
+            weights = {"easy": 0.6, "medium": 0.3, "hard": 0.1}
+            label = "侧重基础巩固，以简单题为主，搭配少量中等题建立信心"
+            reason = f"掌握度 {overall_mastery:.0f}% 较低，简单题占比 60%，从基础入手逐步提升"
+        elif overall_mastery < 70:
+            weights = {"easy": 0.3, "medium": 0.5, "hard": 0.2}
+            label = "基础与提升并重，中等难度为主，逐步提升挑战"
+            reason = f"掌握度 {overall_mastery:.0f}% 中等，中等题占比 50%，在巩固基础的同时适度提升"
+        elif overall_mastery < 90:
+            weights = {"easy": 0.15, "medium": 0.55, "hard": 0.3}
+            label = "进阶挑战，中等和较难题为主，训练综合应用"
+            reason = f"掌握度 {overall_mastery:.0f}% 良好，较难题占比 30%，强化综合运用能力"
+        else:
+            weights = {"easy": 0.05, "medium": 0.35, "hard": 0.6}
+            label = "高难度挑战，以难题为主，冲击满分能力"
+            reason = f"掌握度 {overall_mastery:.0f}% 优秀，难题占比 60%，侧重深度理解与综合拓展"
+        return {
+            "weights": weights,
+            "label": label,
+            "reason": reason,
+        }
 
     def build_adaptive(
         self,
@@ -340,6 +428,17 @@ class AdaptiveBuilder:
         if not all_kps:
             raise ValueError("题库中没有可用的知识点")
 
+        overall_mastery = self._compute_overall_mastery(wrong_kps, weak_kp_mastery)
+        rationale.overall_mastery = overall_mastery
+
+        type_strategy = self._get_type_strategy(overall_mastery)
+        rationale.type_strategy = type_strategy["label"]
+        rationale.type_reason = type_strategy["reason"]
+
+        diff_strategy = self._get_difficulty_strategy(overall_mastery)
+        rationale.difficulty_strategy = diff_strategy["label"]
+        rationale.difficulty_reason = diff_strategy["reason"]
+
         kp_weights: Dict[str, float] = {}
         for kp in all_kps:
             w = 1.0
@@ -370,34 +469,118 @@ class AdaptiveBuilder:
             if kp not in kp_counts:
                 kp_counts[kp] = 0
 
+        diff_weights = diff_strategy["weights"]
+        obj_ratio = type_strategy["objective_ratio"]
+
         selected: List[Question] = []
         used_ids: set = set()
+        diff_actual: Dict[str, int] = {"easy": 0, "medium": 0, "hard": 0}
+        type_actual: Dict[str, int] = {}
+
         for kp, cnt in kp_counts.items():
             if cnt <= 0:
                 continue
-            candidates = self._bank.filter(
-                knowledge_points=[kp],
-                grades=[grade] if grade else None,
-                subjects=[subject] if subject else None,
-                exclude_ids=used_ids,
-            )
-            if not candidates:
-                kp_alloc[kp] = {"requested": cnt, "actual": 0, "reason": "题库无匹配题目"}
-                continue
 
-            actual = min(cnt, len(candidates))
-            sampled = random.sample(candidates, actual)
-            selected.extend(sampled)
-            used_ids.update(q.id for q in sampled)
+            kp_mastery = weak_kp_mastery.get(kp, overall_mastery)
+            kp_diff_weights = self._kp_difficulty_adjust(diff_weights, kp_mastery, kp in wrong_kps)
+
+            kp_obj_count = max(1, round(cnt * obj_ratio)) if cnt >= 2 else cnt
+            kp_subj_count = cnt - kp_obj_count
+
+            kp_selected: List[Question] = []
+
+            obj_needed_by_diff = self._allocate_by_difficulty(kp_obj_count, kp_diff_weights)
+            for diff_lvl, diff_cnt in obj_needed_by_diff.items():
+                if diff_cnt <= 0:
+                    continue
+                candidates = self._bank.filter(
+                    knowledge_points=[kp],
+                    grades=[grade] if grade else None,
+                    subjects=[subject] if subject else None,
+                    difficulties=[diff_lvl] if diff_lvl != "medium" else None,
+                    question_types=[qt for qt in QuestionType if qt in self.OBJECTIVE_TYPES],
+                    exclude_ids=used_ids | set(q.id for q in kp_selected),
+                )
+                if not candidates and diff_lvl == "hard":
+                    candidates = self._bank.filter(
+                        knowledge_points=[kp],
+                        grades=[grade] if grade else None,
+                        subjects=[subject] if subject else None,
+                        question_types=[qt for qt in QuestionType if qt in self.OBJECTIVE_TYPES],
+                        exclude_ids=used_ids | set(q.id for q in kp_selected),
+                    )
+                if candidates:
+                    actual = min(diff_cnt, len(candidates))
+                    sampled = random.sample(candidates, actual)
+                    kp_selected.extend(sampled)
+
+            if kp_subj_count > 0:
+                subj_needed_by_diff = self._allocate_by_difficulty(kp_subj_count, kp_diff_weights)
+                for diff_lvl, diff_cnt in subj_needed_by_diff.items():
+                    if diff_cnt <= 0:
+                        continue
+                    candidates = self._bank.filter(
+                        knowledge_points=[kp],
+                        grades=[grade] if grade else None,
+                        subjects=[subject] if subject else None,
+                        difficulties=[diff_lvl] if diff_lvl != "medium" else None,
+                        question_types=[qt for qt in QuestionType if qt in self.SUBJECTIVE_TYPES],
+                        exclude_ids=used_ids | set(q.id for q in kp_selected),
+                    )
+                    if not candidates and diff_lvl == "hard":
+                        candidates = self._bank.filter(
+                            knowledge_points=[kp],
+                            grades=[grade] if grade else None,
+                            subjects=[subject] if subject else None,
+                            question_types=[qt for qt in QuestionType if qt in self.SUBJECTIVE_TYPES],
+                            exclude_ids=used_ids | set(q.id for q in kp_selected),
+                        )
+                    if candidates:
+                        actual = min(diff_cnt, len(candidates))
+                        sampled = random.sample(candidates, actual)
+                        kp_selected.extend(sampled)
+
+            if not kp_selected and cnt > 0:
+                fallback = self._bank.filter(
+                    knowledge_points=[kp],
+                    grades=[grade] if grade else None,
+                    subjects=[subject] if subject else None,
+                    exclude_ids=used_ids,
+                )
+                if fallback:
+                    actual = min(cnt, len(fallback))
+                    kp_selected = random.sample(fallback, actual)
+
+            for q in kp_selected:
+                diff_actual[q.difficulty.value] = diff_actual.get(q.difficulty.value, 0) + 1
+                tname = q.question_type.display_name
+                type_actual[tname] = type_actual.get(tname, 0) + 1
+
+            selected.extend(kp_selected)
+            used_ids.update(q.id for q in kp_selected)
+
             reason_parts = []
             if kp in wrong_kps:
                 reason_parts.append(f"错题出现{wrong_kps[kp]}次")
             if kp in weak_kp_mastery:
                 reason_parts.append(f"掌握度{weak_kp_mastery[kp]:.0f}%")
+            if kp_selected:
+                obj_n = sum(1 for q in kp_selected if q.question_type in self.OBJECTIVE_TYPES)
+                subj_n = len(kp_selected) - obj_n
+                reason_parts.append(f"客{obj_n}/主{subj_n}")
+                diff_str = "/".join([f"{k}{diff_actual.get(k,0)}" for k in ["easy", "medium", "hard"] if diff_actual.get(k, 0) > 0 and any(q.difficulty.value == k for q in kp_selected)])
+                if diff_str:
+                    reason_parts.append(f"难度{diff_str}")
             kp_alloc[kp] = {
                 "requested": cnt,
-                "actual": actual,
+                "actual": len(kp_selected),
                 "reason": "；".join(reason_parts) if reason_parts else "一般覆盖",
+                "mastery": weak_kp_mastery.get(kp, overall_mastery),
+                "objective_count": sum(1 for q in kp_selected if q.question_type in self.OBJECTIVE_TYPES),
+                "subjective_count": sum(1 for q in kp_selected if q.question_type in self.SUBJECTIVE_TYPES),
+                "easy_count": sum(1 for q in kp_selected if q.difficulty == Difficulty.EASY),
+                "medium_count": sum(1 for q in kp_selected if q.difficulty == Difficulty.MEDIUM),
+                "hard_count": sum(1 for q in kp_selected if q.difficulty == Difficulty.HARD),
             }
 
         if len(selected) < total_count:
@@ -411,29 +594,24 @@ class AdaptiveBuilder:
                 actual = min(extra_needed, len(extras))
                 extra_sampled = random.sample(extras, actual)
                 selected.extend(extra_sampled)
+                for q in extra_sampled:
+                    diff_actual[q.difficulty.value] = diff_actual.get(q.difficulty.value, 0) + 1
+                    tname = q.question_type.display_name
+                    type_actual[tname] = type_actual.get(tname, 0) + 1
 
         if not selected:
             raise ValueError("自适应组卷未能从题库中选取任何题目")
 
-        type_dist: Dict[str, int] = {}
-        for q in selected:
-            t = q.question_type.display_name
-            type_dist[t] = type_dist.get(t, 0) + 1
-
-        weak_count = len([kp for kp in all_kps if kp in weak_kp_names or kp in wrong_kps])
-        if weak_count > total_count * 0.6:
-            diff_strategy = "侧重基础巩固，以简单和中等难度为主"
-        elif weak_count > total_count * 0.3:
-            diff_strategy = "基础与提升并重，中等难度为主"
-        else:
-            diff_strategy = "适度提升挑战，中等和较难为主"
-
         rationale.knowledge_point_allocations = kp_alloc
-        rationale.difficulty_strategy = diff_strategy
-        rationale.type_distribution = type_dist
+        rationale.difficulty_distribution = diff_actual
+        rationale.type_distribution = type_actual
 
         kp_desc = "、".join([f"{kp}({info['actual']}题)" for kp, info in kp_alloc.items() if info.get("actual", 0) > 0])
-        rationale.summary = f"本次练习共{len(selected)}题，针对{len(all_kps)}个知识点组卷。{diff_strategy}。涵盖知识点：{kp_desc}"
+        rationale.summary = (
+            f"本次练习共{len(selected)}题，针对{len(all_kps)}个知识点组卷。"
+            f"整体掌握度评估{overall_mastery:.0f}%，{diff_strategy['label']}；{type_strategy['label']}。"
+            f"涵盖知识点：{kp_desc}"
+        )
 
         total_score = sum(q.score for q in selected)
         exam_id = f"adaptive_{uuid.uuid4().hex[:12]}"
@@ -449,3 +627,47 @@ class AdaptiveBuilder:
         )
 
         return paper, rationale
+
+    def _kp_difficulty_adjust(
+        self,
+        base_weights: Dict[str, float],
+        kp_mastery: float,
+        has_wrong: bool,
+    ) -> Dict[str, float]:
+        w = dict(base_weights)
+        if has_wrong:
+            w["easy"] += 0.2
+            w["hard"] -= 0.1
+        mastery_delta = kp_mastery - 60
+        if mastery_delta < -20:
+            w["easy"] += 0.15
+            w["hard"] -= 0.1
+        elif mastery_delta > 20:
+            w["hard"] += 0.15
+            w["easy"] -= 0.1
+        total = sum(max(v, 0) for v in w.values())
+        if total <= 0:
+            return {"easy": 0.3, "medium": 0.5, "hard": 0.2}
+        return {k: max(v, 0) / total for k, v in w.items()}
+
+    def _allocate_by_difficulty(
+        self,
+        total: int,
+        weights: Dict[str, float],
+    ) -> Dict[str, int]:
+        result: Dict[str, int] = {}
+        remaining = total
+        levels = ["easy", "medium", "hard"]
+        float_alloc: Dict[str, float] = {}
+        for lv in levels:
+            float_alloc[lv] = total * weights.get(lv, 0)
+        int_alloc: Dict[str, int] = {}
+        for lv in levels:
+            int_alloc[lv] = int(float_alloc[lv])
+            remaining -= int_alloc[lv]
+        residuals = sorted(levels, key=lambda lv: float_alloc[lv] - int_alloc[lv], reverse=True)
+        for i in range(remaining):
+            int_alloc[residuals[i % len(residuals)]] += 1
+        for lv in levels:
+            result[lv] = max(0, int_alloc.get(lv, 0))
+        return result
