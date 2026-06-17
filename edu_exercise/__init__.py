@@ -41,12 +41,18 @@ from .session import SessionManager
 from .batch import (
     StudentProfile,
     BatchExamItem,
+    BatchMeta,
+    SkippedStudent,
+    StudentImportResult,
+    BatchImportResult,
     StudentReportSummary,
+    WeakKPMatrixRow,
+    TieredStudents,
     ClassReportSummary,
     ClassroomManager,
 )
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 __all__ = [
     "QuestionType",
@@ -85,7 +91,13 @@ __all__ = [
     "SessionManager",
     "StudentProfile",
     "BatchExamItem",
+    "BatchMeta",
+    "SkippedStudent",
+    "StudentImportResult",
+    "BatchImportResult",
     "StudentReportSummary",
+    "WeakKPMatrixRow",
+    "TieredStudents",
     "ClassReportSummary",
     "ClassroomManager",
 ]

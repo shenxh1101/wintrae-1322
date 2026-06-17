@@ -6,6 +6,7 @@
 import os
 import sys
 import json
+import uuid
 import unittest
 import tempfile
 from datetime import datetime, timedelta
@@ -1246,24 +1247,55 @@ class TestClassroomManager(unittest.TestCase):
                             wrong_book={"t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=2, knowledge_points=["加法"])})
         self.classroom.add_students([p1, p2])
 
-        bid, items = self.classroom.batch_generate_adaptive(
+        bid, items, skipped = self.classroom.batch_generate_adaptive(
             total_count=5,
             subject="数学",
             class_id="一班",
             seed=42,
         )
         self.assertEqual(len(items), 2)
+        self.assertEqual(len(skipped), 0)
         self.assertEqual(items[0].student_id, "s1")
         self.assertIsNotNone(items[0].exam_paper)
         self.assertIsNotNone(items[0].session_id)
         self.assertIsNotNone(items[0].rationale)
+        self.assertGreater(items[0].question_count, 0)
+        self.assertGreater(items[0].estimated_minutes, 0)
+        self.assertGreater(len(items[0].weak_basis), 0)
+        self.assertEqual(items[0].status, "generated")
+
+        meta = self.classroom.get_batch_meta(bid)
+        self.assertEqual(meta.class_id, "一班")
+        self.assertEqual(meta.total_count, 5)
+
+    def test_batch_generate_class_filter_and_skipped(self):
+        p1 = StudentProfile(student_id="s1", student_name="小明", grade="三年级", class_id="一班")
+        p2 = StudentProfile(student_id="s2", student_name="小红", grade="三年级", class_id="二班")
+        p3 = StudentProfile(student_id="s99", student_name="幽灵")
+        self.classroom.add_students([p1, p2, p3])
+
+        bid, items, skipped = self.classroom.batch_generate_adaptive(
+            student_ids=["s1", "s2", "s99", "s1", "s_not_exists"],
+            total_count=5,
+            subject="数学",
+            class_id="一班",
+            seed=42,
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].student_id, "s1")
+        self.assertGreaterEqual(len(skipped), 4)
+        skip_reasons = {s.student_id: s.reason for s in skipped}
+        self.assertIn("s2", skip_reasons)
+        self.assertIn("班级不匹配", skip_reasons["s2"])
+        self.assertIn("s99", skip_reasons)
+        self.assertIn("s_not_exists", skip_reasons)
 
     def test_batch_import_and_grade(self):
         p1 = StudentProfile(student_id="s1", student_name="小明", grade="三年级")
         p2 = StudentProfile(student_id="s2", student_name="小红", grade="三年级")
         self.classroom.add_students([p1, p2])
 
-        bid, items = self.classroom.batch_generate_adaptive(
+        bid, items, _ = self.classroom.batch_generate_adaptive(
             total_count=4,
             subject="数学",
             seed=42,
@@ -1285,13 +1317,39 @@ class TestClassroomManager(unittest.TestCase):
                     q_answers[q.id] = "测试答案"
             answers_dict[item.student_id] = q_answers
 
-        sessions = self.classroom.batch_import_answers(bid, answers_dict)
-        self.assertEqual(len(sessions), 2)
+        import_result = self.classroom.batch_import_answers(bid, answers_dict)
+        self.assertEqual(import_result.success_count, 2)
+        self.assertEqual(import_result.error_count, 0)
+        self.assertEqual(import_result.skipped_count, 0)
 
-        results = self.classroom.batch_grade(bid)
+        results, grade_summaries = self.classroom.batch_grade(bid)
         self.assertEqual(len(results), 2)
         self.assertIn("s1", results)
         self.assertIn("s2", results)
+
+    def test_batch_import_tolerant(self):
+        p1 = StudentProfile(student_id="s1", student_name="小明", grade="三年级")
+        p2 = StudentProfile(student_id="s2", student_name="小红", grade="三年级")
+        self.classroom.add_students([p1, p2])
+
+        bid, items, _ = self.classroom.batch_generate_adaptive(
+            total_count=4,
+            subject="数学",
+            seed=42,
+        )
+
+        q_ids_s1 = [q.id for q in items[0].exam_paper.questions]
+        answers_dict = {
+            "s1": {q_ids_s1[0]: "B", "INVALID_QID": "X", q_ids_s1[1]: True},
+            "s_not_in_batch": {"q1": "A"},
+            items[1].student_id: {q.id: "B" for q in items[1].exam_paper.questions[:2]},
+        }
+
+        import_result = self.classroom.batch_import_answers(bid, answers_dict)
+        self.assertEqual(import_result.skipped_count, 1)
+        s1_res = next(r for r in import_result.per_student if r.student_id == "s1")
+        self.assertEqual(s1_res.status, "partial")
+        self.assertGreater(len(s1_res.errors), 0)
 
     def test_generate_class_report(self):
         p1 = StudentProfile(student_id="s1", student_name="小明", grade="三年级")
@@ -1299,7 +1357,7 @@ class TestClassroomManager(unittest.TestCase):
         p3 = StudentProfile(student_id="s3", student_name="小刚", grade="三年级")
         self.classroom.add_students([p1, p2, p3])
 
-        bid, items = self.classroom.batch_generate_adaptive(
+        bid, items, _ = self.classroom.batch_generate_adaptive(
             total_count=4,
             subject="数学",
             seed=42,
@@ -1332,7 +1390,99 @@ class TestClassroomManager(unittest.TestCase):
         self.assertIsNotNone(report.student_reports[0].rank)
         self.assertEqual(report.student_reports[0].rank, 1)
         self.assertIn("grade_distribution", report.to_dict())
+        self.assertIn("weak_kp_matrix", report.to_dict())
+        self.assertIn("tiered_students", report.to_dict())
+        self.assertIsInstance(report.weak_kp_matrix, list)
+        self.assertIsNotNone(report.tiered_students)
         self.assertGreater(len(report.to_dict()), 0)
+
+
+class TestSessionFullResume(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.mgr = SessionManager()
+
+    def test_save_ungraded_then_full_resume_and_grade_and_review(self):
+        exam = ExamBuilder(self.bank).quick_build(count=3, grade="三年级", subject="数学", seed=10)
+        sess = self.mgr.create_session("stu_resume_1", exam)
+        sess_id = sess.id
+        total_q = len(exam.questions)
+        self.assertGreaterEqual(total_q, 1)
+
+        q_ids = [q.id for q in exam.questions]
+        half = total_q // 2 if total_q >= 2 else 1
+        for i, qid in enumerate(q_ids[:half]):
+            q = exam.questions[i]
+            if q.question_type == QuestionType.SINGLE_CHOICE:
+                self.mgr.submit_answer(sess_id, qid, "B")
+            elif q.question_type == QuestionType.TRUE_FALSE:
+                self.mgr.submit_answer(sess_id, qid, True)
+            elif q.question_type == QuestionType.MULTIPLE_CHOICE:
+                self.mgr.submit_answer(sess_id, qid, ["A", "B"])
+            elif q.question_type == QuestionType.FILL_BLANK:
+                self.mgr.submit_answer(sess_id, qid, "6")
+            else:
+                self.mgr.submit_answer(sess_id, qid, "中途保存前作答")
+
+        tmp_path = os.path.join(os.environ.get("TEMP", "."), f"sess_resume_{uuid.uuid4().hex[:8]}.json")
+        try:
+            self.mgr.save_to_json(tmp_path)
+
+            mgr2 = SessionManager()
+            mgr2.load_from_json(tmp_path)
+            sess2 = mgr2.get_session(sess_id)
+            self.assertIsNotNone(sess2)
+            self.assertIsNotNone(sess2.exam_paper)
+            self.assertEqual(len(sess2.exam_paper.questions), total_q)
+            self.assertIn(sess2.status, ("created", "answering"))
+
+            for i, qid in enumerate(q_ids[half:]):
+                q = sess2.exam_paper.questions[i + half]
+                if q.question_type == QuestionType.SINGLE_CHOICE:
+                    mgr2.submit_answer(sess_id, qid, "A")
+                elif q.question_type == QuestionType.TRUE_FALSE:
+                    mgr2.submit_answer(sess_id, qid, False)
+                elif q.question_type == QuestionType.MULTIPLE_CHOICE:
+                    mgr2.submit_answer(sess_id, qid, ["A", "C"])
+                elif q.question_type == QuestionType.FILL_BLANK:
+                    mgr2.submit_answer(sess_id, qid, "0")
+                else:
+                    mgr2.submit_answer(sess_id, qid, "恢复后继续作答的答案")
+
+            result = mgr2.grade_session(sess_id)
+            self.assertIsNotNone(result)
+            self.assertEqual(result.exam_id, exam.id)
+            self.assertEqual(len(result.question_results), total_q)
+
+            sa_qrs = [qr for qr in result.question_results if qr.question_type == QuestionType.SHORT_ANSWER]
+            if sa_qrs:
+                sa_qr = sa_qrs[0]
+                mgr2.review_question(sess_id, sa_qr.question_id, sa_qr.max_score, "t_reviewer", "已复核")
+                sess3 = mgr2.get_session(sess_id)
+                self.assertEqual(sess3.status, "reviewed")
+                qr_idx = next(i for i, qr in enumerate(sess3.exam_result.question_results)
+                               if qr.question_id == sa_qr.question_id)
+                self.assertEqual(sess3.exam_result.question_results[qr_idx].review_info.review_status, "reviewed")
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    def test_save_file_contains_questions_snapshot(self):
+        exam = ExamBuilder(self.bank).quick_build(count=3, grade="三年级", subject="数学", seed=20)
+        self.mgr.create_session("stu_snap", exam)
+
+        tmp_path = os.path.join(os.environ.get("TEMP", "."), f"snap_{uuid.uuid4().hex[:8]}.json")
+        try:
+            self.mgr.save_to_json(tmp_path)
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            self.assertEqual(len(data), 1)
+            self.assertIn("exam_paper", data[0])
+            self.assertIn("questions", data[0]["exam_paper"])
+            self.assertEqual(len(data[0]["exam_paper"]["questions"]), 3)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
 
 
 class TestAdvancedAnalytics(unittest.TestCase):
@@ -1487,6 +1637,7 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestAdaptiveBuilderAdvanced))
     suite.addTests(loader.loadTestsFromTestCase(TestSessionResume))
     suite.addTests(loader.loadTestsFromTestCase(TestClassroomManager))
+    suite.addTests(loader.loadTestsFromTestCase(TestSessionFullResume))
     suite.addTests(loader.loadTestsFromTestCase(TestAdvancedAnalytics))
 
     runner = unittest.TextTestRunner(verbosity=2)

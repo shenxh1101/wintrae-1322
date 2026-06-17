@@ -11,8 +11,114 @@ from .models import (
     PracticeSession,
     ReviewInfo,
     QuestionType,
+    Difficulty,
+    Question,
+    SingleChoiceQuestion,
+    MultipleChoiceQuestion,
+    FillBlankQuestion,
+    TrueFalseQuestion,
+    ShortAnswerQuestion,
+    GradingCriterion,
 )
 from .grader import Grader
+
+
+def _question_to_dict(q: Question) -> Dict[str, Any]:
+    d: Dict[str, Any] = {
+        "id": q.id,
+        "question_type": q.question_type.value,
+        "content": q.content,
+        "answer": q.answer,
+        "analysis": q.analysis,
+        "knowledge_points": q.knowledge_points,
+        "grade": q.grade,
+        "subject": q.subject,
+        "difficulty": q.difficulty.value,
+        "score": q.score,
+        "options": q.options,
+        "blanks": q.blanks,
+        "tags": q.tags,
+        "metadata": q.metadata,
+        "grading_criterion": (
+            q.grading_criterion.to_dict() if q.grading_criterion else None
+        ),
+    }
+    return d
+
+
+def _dict_to_question(d: Dict[str, Any]) -> Question:
+    qt = QuestionType(d.get("question_type", "single_choice"))
+    diff = Difficulty(d.get("difficulty", "medium"))
+    gc = None
+    if d.get("grading_criterion"):
+        gcd = d["grading_criterion"]
+        gc = GradingCriterion(
+            keywords=gcd.get("keywords"),
+            min_length=gcd.get("min_length"),
+            max_length=gcd.get("max_length"),
+            key_points=gcd.get("key_points"),
+            partial_score_ratio=gcd.get("partial_score_ratio", 0.0),
+            custom_validator=gcd.get("custom_validator"),
+        )
+    base_kwargs: Dict[str, Any] = dict(
+        id=d["id"],
+        content=d["content"],
+        answer=d["answer"],
+        analysis=d.get("analysis", ""),
+        knowledge_points=d.get("knowledge_points", []),
+        grade=d.get("grade"),
+        subject=d.get("subject"),
+        difficulty=diff,
+        score=d.get("score", 5.0),
+        options=d.get("options"),
+        blanks=d.get("blanks"),
+        grading_criterion=gc,
+        tags=d.get("tags", []),
+        metadata=d.get("metadata", {}),
+    )
+    if qt == QuestionType.SINGLE_CHOICE:
+        return SingleChoiceQuestion(**base_kwargs)
+    elif qt == QuestionType.MULTIPLE_CHOICE:
+        return MultipleChoiceQuestion(**base_kwargs)
+    elif qt == QuestionType.FILL_BLANK:
+        return FillBlankQuestion(**base_kwargs)
+    elif qt == QuestionType.TRUE_FALSE:
+        return TrueFalseQuestion(**base_kwargs)
+    else:
+        return ShortAnswerQuestion(**base_kwargs)
+
+
+def _exam_paper_to_dict(paper: ExamPaper) -> Dict[str, Any]:
+    return {
+        "id": paper.id,
+        "title": paper.title,
+        "questions": [_question_to_dict(q) for q in paper.questions],
+        "total_score": paper.total_score,
+        "grade": paper.grade,
+        "subject": paper.subject,
+        "duration_minutes": paper.duration_minutes,
+        "created_at": paper.created_at.isoformat(),
+        "metadata": paper.metadata,
+    }
+
+
+def _dict_to_exam_paper(d: Dict[str, Any]) -> ExamPaper:
+    questions = [_dict_to_question(qd) for qd in d.get("questions", [])]
+    return ExamPaper(
+        id=d["id"],
+        title=d.get("title", ""),
+        questions=questions,
+        total_score=d.get("total_score", 0.0),
+        grade=d.get("grade"),
+        subject=d.get("subject"),
+        duration_minutes=d.get("duration_minutes"),
+        created_at=(
+            datetime.fromisoformat(d["created_at"])
+            if d.get("created_at")
+            else datetime.now()
+        ),
+        metadata=d.get("metadata", {}),
+    )
 
 
 class SessionManager:
@@ -214,13 +320,24 @@ class SessionManager:
                 "answers": session.answers,
                 "answer_timestamps": session.answer_timestamps,
                 "created_at": session.created_at.isoformat(),
-                "answering_started_at": session.answering_started_at.isoformat() if session.answering_started_at else None,
-                "submitted_at": session.submitted_at.isoformat() if session.submitted_at else None,
-                "graded_at": session.graded_at.isoformat() if session.graded_at else None,
-                "closed_at": session.closed_at.isoformat() if session.closed_at else None,
+                "answering_started_at": (
+                    session.answering_started_at.isoformat()
+                    if session.answering_started_at
+                    else None
+                ),
+                "submitted_at": (
+                    session.submitted_at.isoformat() if session.submitted_at else None
+                ),
+                "graded_at": (
+                    session.graded_at.isoformat() if session.graded_at else None
+                ),
+                "closed_at": (
+                    session.closed_at.isoformat() if session.closed_at else None
+                ),
                 "metadata": session.metadata,
             }
             if session.exam_paper:
+                s_data["exam_paper"] = _exam_paper_to_dict(session.exam_paper)
                 s_data["exam_id"] = session.exam_paper.id
                 s_data["exam_title"] = session.exam_paper.title
                 s_data["exam_total_score"] = session.exam_paper.total_score
@@ -245,7 +362,12 @@ class SessionManager:
             data = json.load(f)
         for s_data in data:
             exam_paper = None
-            if exam_papers and s_data.get("exam_id"):
+            if s_data.get("exam_paper"):
+                try:
+                    exam_paper = _dict_to_exam_paper(s_data["exam_paper"])
+                except Exception:
+                    exam_paper = None
+            if exam_paper is None and exam_papers and s_data.get("exam_id"):
                 exam_paper = exam_papers.get(s_data["exam_id"])
 
             exam_result = None
@@ -262,23 +384,33 @@ class SessionManager:
                             review_status=ri_data.get("review_status", "auto"),
                             reviewer_id=ri_data.get("reviewer_id"),
                             review_comment=ri_data.get("review_comment"),
-                            reviewed_at=datetime.fromisoformat(ri_data["reviewed_at"]) if ri_data.get("reviewed_at") else None,
+                            reviewed_at=(
+                                datetime.fromisoformat(ri_data["reviewed_at"])
+                                if ri_data.get("reviewed_at")
+                                else None
+                            ),
                         )
-                    qrs.append(QuestionResult(
-                        question_id=qr_d["question_id"],
-                        student_answer=qr_d["student_answer"],
-                        correct_answer=qr_d["correct_answer"],
-                        is_correct=qr_d["is_correct"],
-                        score=qr_d["score"],
-                        max_score=qr_d["max_score"],
-                        partial_points=qr_d.get("partial_points"),
-                        feedback=qr_d.get("feedback", ""),
-                        matched_key_points=qr_d.get("matched_key_points"),
-                        missed_key_points=qr_d.get("missed_key_points"),
-                        knowledge_points=qr_d.get("knowledge_points", []),
-                        question_type=QuestionType(qr_d["question_type"]) if qr_d.get("question_type") else None,
-                        review_info=ri,
-                    ))
+                    qrs.append(
+                        QuestionResult(
+                            question_id=qr_d["question_id"],
+                            student_answer=qr_d["student_answer"],
+                            correct_answer=qr_d["correct_answer"],
+                            is_correct=qr_d["is_correct"],
+                            score=qr_d["score"],
+                            max_score=qr_d["max_score"],
+                            partial_points=qr_d.get("partial_points"),
+                            feedback=qr_d.get("feedback", ""),
+                            matched_key_points=qr_d.get("matched_key_points"),
+                            missed_key_points=qr_d.get("missed_key_points"),
+                            knowledge_points=qr_d.get("knowledge_points", []),
+                            question_type=(
+                                QuestionType(qr_d["question_type"])
+                                if qr_d.get("question_type")
+                                else None
+                            ),
+                            review_info=ri,
+                        )
+                    )
                 exam_result = ExamResult(
                     exam_id=er_data["exam_id"],
                     student_id=er_data["student_id"],
@@ -286,8 +418,16 @@ class SessionManager:
                     total_score=er_data.get("total_score", 0),
                     max_score=er_data.get("max_score", 0),
                     percentage=er_data.get("percentage", 0),
-                    started_at=datetime.fromisoformat(er_data["started_at"]) if er_data.get("started_at") else None,
-                    completed_at=datetime.fromisoformat(er_data["completed_at"]) if er_data.get("completed_at") else None,
+                    started_at=(
+                        datetime.fromisoformat(er_data["started_at"])
+                        if er_data.get("started_at")
+                        else None
+                    ),
+                    completed_at=(
+                        datetime.fromisoformat(er_data["completed_at"])
+                        if er_data.get("completed_at")
+                        else None
+                    ),
                     time_spent_seconds=er_data.get("time_spent_seconds"),
                     metadata=er_data.get("metadata", {}),
                     _exam_total_score=er_data.get("max_score", 0),
@@ -304,11 +444,31 @@ class SessionManager:
                 grade=s_data.get("grade"),
                 subject=s_data.get("subject"),
                 knowledge_points=s_data.get("knowledge_points", []),
-                created_at=datetime.fromisoformat(s_data["created_at"]) if s_data.get("created_at") else datetime.now(),
-                answering_started_at=datetime.fromisoformat(s_data["answering_started_at"]) if s_data.get("answering_started_at") else None,
-                submitted_at=datetime.fromisoformat(s_data["submitted_at"]) if s_data.get("submitted_at") else None,
-                graded_at=datetime.fromisoformat(s_data["graded_at"]) if s_data.get("graded_at") else None,
-                closed_at=datetime.fromisoformat(s_data["closed_at"]) if s_data.get("closed_at") else None,
+                created_at=(
+                    datetime.fromisoformat(s_data["created_at"])
+                    if s_data.get("created_at")
+                    else datetime.now()
+                ),
+                answering_started_at=(
+                    datetime.fromisoformat(s_data["answering_started_at"])
+                    if s_data.get("answering_started_at")
+                    else None
+                ),
+                submitted_at=(
+                    datetime.fromisoformat(s_data["submitted_at"])
+                    if s_data.get("submitted_at")
+                    else None
+                ),
+                graded_at=(
+                    datetime.fromisoformat(s_data["graded_at"])
+                    if s_data.get("graded_at")
+                    else None
+                ),
+                closed_at=(
+                    datetime.fromisoformat(s_data["closed_at"])
+                    if s_data.get("closed_at")
+                    else None
+                ),
                 metadata=s_data.get("metadata", {}),
             )
             self._sessions[session.id] = session
