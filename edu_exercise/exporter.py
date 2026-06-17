@@ -8,6 +8,7 @@ from .models import (
     PracticeRecord,
     QuestionType,
     Question,
+    ReviewInfo,
 )
 
 
@@ -376,15 +377,22 @@ class Exporter:
             qmap = {q.id: q for q in exam.questions} if exam else {}
             for idx, qr in enumerate(result.question_results, 1):
                 q = qmap.get(qr.question_id)
-                status = "✓ 正确" if qr.is_correct else "✗ 错误"
-                lines.append(f"{idx}. [{status}] 得分{qr.score}/{qr.max_score}分  (ID:{qr.question_id})")
+                status = "OK 正确" if qr.is_correct else "X  错误"
+                score_line = f"得分{qr.score}/{qr.max_score}分"
+                if qr.review_info and qr.review_info.review_status == "reviewed":
+                    score_line += f" (自动{qr.review_info.auto_score} -> 复核{qr.review_info.reviewed_score})"
+                elif qr.review_info and qr.review_info.review_status == "pending_review":
+                    score_line += " [待复核]"
+                lines.append(f"{idx}. [{status}] {score_line}  (ID:{qr.question_id})")
                 if q:
                     lines.append(f"{self.indent}题目：{q.content[:80]}{'...' if len(q.content) > 80 else ''}")
                 if not qr.is_correct:
                     lines.append(f"{self.indent}你的答案：{qr.student_answer}")
                     lines.append(f"{self.indent}正确答案：{qr.correct_answer}")
-                    if qr.feedback:
-                        lines.append(f"{self.indent}反馈：{qr.feedback}")
+                if qr.review_info and qr.review_info.review_comment:
+                    lines.append(f"{self.indent}教师评语：{qr.review_info.review_comment}")
+                if qr.feedback:
+                    lines.append(f"{self.indent}反馈：{qr.feedback}")
                 lines.append("")
 
         if result.wrong_count > 0:
@@ -422,7 +430,12 @@ class Exporter:
             for idx, qr in enumerate(result.question_results, 1):
                 q = qmap.get(qr.question_id)
                 icon = "✅" if qr.is_correct else "❌"
-                lines.append(f"### {idx}. {icon} 得分 {qr.score}/{qr.max_score} 分")
+                score_line = f"得分 {qr.score}/{qr.max_score} 分"
+                if qr.review_info and qr.review_info.review_status == "reviewed":
+                    score_line += f" (自动{qr.review_info.auto_score} -> 复核{qr.review_info.reviewed_score})"
+                elif qr.review_info and qr.review_info.review_status == "pending_review":
+                    score_line += " [待复核]"
+                lines.append(f"### {idx}. {icon} {score_line}")
                 if q:
                     lines.append(f"**题目：** {q.content}")
                     if q.options:
@@ -432,6 +445,8 @@ class Exporter:
                 lines.append("")
                 lines.append(f"**你的答案：** {qr.student_answer if qr.student_answer is not None else '(未作答)'}")
                 lines.append(f"**正确答案：** {qr.correct_answer}")
+                if qr.review_info and qr.review_info.review_comment:
+                    lines.append(f"**教师评语：** {qr.review_info.review_comment}")
                 if qr.feedback:
                     lines.append(f"**反馈：** {qr.feedback}")
                 lines.append("")
@@ -487,7 +502,12 @@ class Exporter:
                 card_cls = "q-correct" if qr.is_correct else "q-wrong"
                 icon = "✅" if qr.is_correct else "❌"
                 html.append(f'<div class="q-card {card_cls}">')
-                html.append(f'<h3>{idx}. {icon} 得分 <b>{qr.score}/{qr.max_score}</b> 分  <small style="color:#a0aec0;">(ID:{qr.question_id})</small></h3>')
+                score_display = f'{qr.score}/{qr.max_score}'
+                if qr.review_info and qr.review_info.review_status == "reviewed":
+                    score_display += f' <span style="color:#805ad5;font-size:12px;">(自动{qr.review_info.auto_score} -> 复核{qr.review_info.reviewed_score})</span>'
+                elif qr.review_info and qr.review_info.review_status == "pending_review":
+                    score_display += ' <span style="color:#d69e2e;font-size:12px;">[待复核]</span>'
+                html.append(f'<h3>{idx}. {icon} 得分 <b>{score_display}</b> 分  <small style="color:#a0aec0;">(ID:{qr.question_id})</small></h3>')
                 if q:
                     html.append(f'<p style="font-size:16px;">{q.content}</p>')
                     if q.options:
@@ -496,6 +516,8 @@ class Exporter:
                 html.append(f'<div style="margin-top:12px;"><span style="color:#718096;">你的答案：</span><b>{qr.student_answer if qr.student_answer is not None else "(未作答)"}</b></div>')
                 if not qr.is_correct:
                     html.append(f'<div><span style="color:#718096;">正确答案：</span><b style="color:#38a169;">{qr.correct_answer}</b></div>')
+                if qr.review_info and qr.review_info.review_comment:
+                    html.append(f'<div style="margin-top:8px;padding:8px;background:#faf5ff;border-left:3px solid #805ad5;border-radius:4px;"><b>教师评语：</b>{qr.review_info.review_comment}</div>')
                 if qr.feedback:
                     html.append(f'<div class="feedback">💡 {qr.feedback}</div>')
                 html.append('</div>')
@@ -818,3 +840,81 @@ class Exporter:
     def save_to_file(self, content: str, filepath: str) -> None:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
+
+    def export_adaptive_rationale(
+        self,
+        rationale: Any,
+        format: str = "text",
+    ) -> str:
+        r = rationale
+        if format == "markdown":
+            return self._rationale_markdown(r)
+        elif format == "html":
+            return self._rationale_html(r)
+        else:
+            return self._rationale_text(r)
+
+    def _rationale_text(self, r: Any) -> str:
+        lines = []
+        lines.append("=" * 60)
+        lines.append("自适应组卷说明")
+        lines.append("=" * 60)
+        lines.append(f"总结：{r.summary}")
+        lines.append(f"难度策略：{r.difficulty_strategy}")
+        lines.append("")
+        lines.append("知识点分配：")
+        for kp, info in r.knowledge_point_allocations.items():
+            lines.append(f"{self.indent}- {kp}: 需要{info.get('requested',0)}题, 实际{info.get('actual',0)}题 ({info.get('reason','')})")
+        lines.append("")
+        lines.append("题型分布：")
+        for t, cnt in r.type_distribution.items():
+            lines.append(f"{self.indent}- {t}: {cnt}题")
+        return "\n".join(lines)
+
+    def _rationale_markdown(self, r: Any) -> str:
+        lines = []
+        lines.append("# 自适应组卷说明")
+        lines.append("")
+        lines.append(f"> {r.summary}")
+        lines.append("")
+        lines.append(f"**难度策略：** {r.difficulty_strategy}")
+        lines.append("")
+        lines.append("## 知识点分配")
+        lines.append("")
+        lines.append("| 知识点 | 需要题数 | 实际题数 | 原因 |")
+        lines.append("|--------|----------|----------|------|")
+        for kp, info in r.knowledge_point_allocations.items():
+            lines.append(f"| {kp} | {info.get('requested',0)} | {info.get('actual',0)} | {info.get('reason','')} |")
+        lines.append("")
+        lines.append("## 题型分布")
+        lines.append("")
+        for t, cnt in r.type_distribution.items():
+            lines.append(f"- **{t}**: {cnt}题")
+        return "\n".join(lines)
+
+    def _rationale_html(self, r: Any) -> str:
+        html = ['<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">']
+        html.append('<title>自适应组卷说明</title>')
+        html.append('<style>')
+        html.append('body{font-family:"Microsoft YaHei",sans-serif;padding:40px;max-width:900px;margin:0 auto;background:#f0fff4;}')
+        html.append('h1{color:#276749;border-bottom:3px solid #48bb78;padding-bottom:15px;}')
+        html.append('.card{background:white;border-radius:10px;padding:25px;margin:20px 0;box-shadow:0 2px 10px rgba(0,0,0,0.08);}')
+        html.append('table{width:100%;border-collapse:collapse;margin:15px 0;}')
+        html.append('th,td{padding:10px;text-align:left;border-bottom:1px solid #e2e8f0;}')
+        html.append('th{background:#f0fff4;font-weight:600;}')
+        html.append('.tag{display:inline-block;padding:3px 10px;background:#c6f6d5;border-radius:12px;font-size:13px;margin:3px;}')
+        html.append('</style></head><body>')
+        html.append('<h1>自适应组卷说明</h1>')
+        html.append(f'<div class="card"><p style="font-size:16px;line-height:1.8;">{r.summary}</p>')
+        html.append(f'<p><b>难度策略：</b>{r.difficulty_strategy}</p></div>')
+        html.append('<div class="card"><h2>知识点分配</h2>')
+        html.append('<table><tr><th>知识点</th><th>需要题数</th><th>实际题数</th><th>原因</th></tr>')
+        for kp, info in r.knowledge_point_allocations.items():
+            html.append(f'<tr><td><b>{kp}</b></td><td>{info.get("requested",0)}</td><td>{info.get("actual",0)}</td><td>{info.get("reason","")}</td></tr>')
+        html.append('</table></div>')
+        html.append('<div class="card"><h2>题型分布</h2>')
+        for t, cnt in r.type_distribution.items():
+            html.append(f'<span class="tag">{t}: {cnt}题</span>')
+        html.append('</div>')
+        html.append('</body></html>')
+        return "\n".join(html)

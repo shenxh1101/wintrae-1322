@@ -32,9 +32,15 @@ from edu_exercise import (
     ExamConfig,
     TypeConfig,
     DifficultyConfig,
+    AdaptiveBuilder,
+    AdaptiveRationale,
     Grader,
     Analytics,
+    KnowledgePointStats,
     Exporter,
+    ReviewInfo,
+    PracticeSession,
+    SessionManager,
 )
 
 
@@ -696,6 +702,374 @@ class TestExporter(unittest.TestCase):
             os.unlink(tmp_path)
 
 
+class TestReviewInfo(unittest.TestCase):
+    def test_auto_status(self):
+        ri = ReviewInfo(auto_score=5.0, review_status="auto")
+        self.assertEqual(ri.effective_score, 5.0)
+
+    def test_reviewed_status(self):
+        ri = ReviewInfo(auto_score=3.0, reviewed_score=5.0, review_status="reviewed")
+        self.assertEqual(ri.effective_score, 5.0)
+
+    def test_pending_status(self):
+        ri = ReviewInfo(auto_score=4.0, review_status="pending_review")
+        self.assertEqual(ri.effective_score, 4.0)
+
+    def test_to_dict(self):
+        ri = ReviewInfo(auto_score=3.0, reviewed_score=5.0, review_status="reviewed", reviewer_id="teacher1")
+        d = ri.to_dict()
+        self.assertEqual(d["auto_score"], 3.0)
+        self.assertEqual(d["reviewed_score"], 5.0)
+        self.assertEqual(d["reviewer_id"], "teacher1")
+
+    def test_question_result_with_review_info(self):
+        qr = QuestionResult(
+            question_id="q1", student_answer="ans", correct_answer="ans2",
+            is_correct=False, score=3, max_score=5,
+            review_info=ReviewInfo(auto_score=3, review_status="pending_review"),
+        )
+        self.assertIsNotNone(qr.review_info)
+        d = qr.to_dict()
+        self.assertIn("review_info", d)
+        self.assertEqual(d["review_info"]["review_status"], "pending_review")
+
+
+class TestTrueFalseSafety(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.grader = Grader()
+
+    def test_valid_true_answers(self):
+        q = self.bank.get_question("t_tf_1")
+        for ans in ["对", "正确", "T", "t", "1", "是", True]:
+            r = self.grader.grade_question(q, ans)
+            self.assertTrue(r.is_correct, f"Expected True for answer '{ans}'")
+
+    def test_valid_false_answers(self):
+        q = self.bank.get_question("t_tf_2")
+        for ans in ["错", "错误", "F", "f", "0", "否", False]:
+            r = self.grader.grade_question(q, ans)
+            self.assertTrue(r.is_correct, f"Expected True for answer '{ans}'")
+
+    def test_unrecognized_answer(self):
+        q = self.bank.get_question("t_tf_1")
+        r = self.grader.grade_question(q, "maybe")
+        self.assertFalse(r.is_correct)
+        self.assertIn("无法识别", r.feedback)
+
+    def test_no_eval_on_arbitrary_string(self):
+        q = self.bank.get_question("t_tf_1")
+        r = self.grader.grade_question(q, "__import__('os').system('echo hack')")
+        self.assertFalse(r.is_correct)
+        self.assertIn("无法识别", r.feedback)
+
+
+class TestShortAnswerReviewStatus(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.grader = Grader()
+
+    def test_short_answer_has_pending_review(self):
+        q = self.bank.get_question("t_sa_1")
+        ans = "原来有5个，给了2个，剩3个，又买3个，3+3=6个。"
+        r = self.grader.grade_question(q, ans)
+        self.assertIsNotNone(r.review_info)
+        self.assertEqual(r.review_info.review_status, "pending_review")
+        self.assertEqual(r.review_info.auto_score, r.score)
+
+    def test_short_answer_empty_has_pending_review(self):
+        q = self.bank.get_question("t_sa_1")
+        r = self.grader.grade_question(q, "")
+        self.assertIsNotNone(r.review_info)
+        self.assertEqual(r.review_info.review_status, "pending_review")
+
+    def test_other_types_have_auto_status(self):
+        q = self.bank.get_question("t_sc_1")
+        r = self.grader.grade_question(q, "B")
+        self.assertIsNotNone(r.review_info)
+        self.assertEqual(r.review_info.review_status, "auto")
+
+
+class TestExamResultMaxScore(unittest.TestCase):
+    def test_max_score_uses_exam_total(self):
+        bank = create_test_bank()
+        builder = ExamBuilder(bank)
+        exam = builder.build_from_question_ids(
+            ["t_sc_1", "t_tf_1"],
+            total_score=100,
+        )
+        self.assertEqual(exam.total_score, 100)
+        answers = [
+            StudentAnswer("t_sc_1", "B"),
+            StudentAnswer("t_tf_1", True),
+        ]
+        grader = Grader()
+        result = grader.grade_exam(exam, answers, "s1")
+        self.assertEqual(result.max_score, 100)
+
+    def test_max_score_auto_when_no_override(self):
+        bank = create_test_bank()
+        builder = ExamBuilder(bank)
+        exam = builder.build_from_question_ids(["t_sc_1", "t_tf_1"])
+        self.assertEqual(exam.total_score, 5)
+        answers = [
+            StudentAnswer("t_sc_1", "B"),
+            StudentAnswer("t_tf_1", True),
+        ]
+        grader = Grader()
+        result = grader.grade_exam(exam, answers, "s1")
+        self.assertEqual(result.max_score, 5)
+
+
+class TestAdaptiveBuilder(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.builder = AdaptiveBuilder(self.bank)
+
+    def test_build_adaptive_basic(self):
+        wrong_book = {
+            "t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=3, knowledge_points=["加法"]),
+            "t_tf_2": WrongQuestion(question_id="t_tf_2", wrong_count=2, knowledge_points=["除法"]),
+        }
+        weak_kps = [
+            KnowledgePointStats(knowledge_point="加法", total_questions=3, correct_count=1, wrong_count=2, total_score=10, earned_score=3),
+        ]
+        paper, rationale = self.builder.build_adaptive(
+            wrong_book=wrong_book,
+            weak_knowledge_points=weak_kps,
+            total_count=5,
+            subject="数学",
+            seed=42,
+        )
+        self.assertGreater(len(paper.questions), 0)
+        self.assertIsNotNone(rationale.summary)
+        self.assertIn("加法", rationale.knowledge_point_allocations)
+        self.assertGreater(len(rationale.type_distribution), 0)
+
+    def test_build_adaptive_rationale_to_dict(self):
+        wrong_book = {
+            "t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=2, knowledge_points=["加法"]),
+        }
+        weak_kps = []
+        paper, rationale = self.builder.build_adaptive(
+            wrong_book=wrong_book,
+            weak_knowledge_points=weak_kps,
+            total_count=3,
+            seed=42,
+        )
+        d = rationale.to_dict()
+        self.assertIn("knowledge_point_allocations", d)
+        self.assertIn("difficulty_strategy", d)
+        self.assertIn("summary", d)
+
+    def test_build_adaptive_with_no_weak(self):
+        paper, rationale = self.builder.build_adaptive(
+            wrong_book={},
+            weak_knowledge_points=[],
+            total_count=4,
+            subject="数学",
+            seed=42,
+        )
+        self.assertGreater(len(paper.questions), 0)
+        self.assertGreater(len(rationale.summary), 0)
+
+    def test_paper_has_rationale_metadata(self):
+        wrong_book = {
+            "t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=1, knowledge_points=["加法"]),
+        }
+        paper, _ = self.builder.build_adaptive(
+            wrong_book=wrong_book,
+            weak_knowledge_points=[],
+            total_count=3,
+            seed=42,
+        )
+        self.assertIn("adaptive_rationale", paper.metadata)
+
+
+class TestSessionManager(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.builder = ExamBuilder(self.bank)
+        self.mgr = SessionManager()
+        self.grader = Grader()
+
+    def test_create_session(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1", "t_tf_1"], title="会话测试")
+        session = self.mgr.create_session("stu_1", exam)
+        self.assertEqual(session.student_id, "stu_1")
+        self.assertEqual(session.status, "created")
+        self.assertIsNotNone(session.exam_paper)
+
+    def test_submit_answer_and_grade(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1", "t_tf_1"], title="会话测试")
+        session = self.mgr.create_session("stu_1", exam)
+        self.mgr.submit_answer(session.id, "t_sc_1", "B")
+        self.mgr.submit_answer(session.id, "t_tf_1", True)
+        result = self.mgr.grade_session(session.id)
+        self.assertEqual(session.status, "graded")
+        self.assertEqual(result.correct_count, 2)
+
+    def test_submit_answers_bulk(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1", "t_tf_1"], title="会话测试")
+        session = self.mgr.create_session("stu_1", exam)
+        self.mgr.submit_answers(session.id, {"t_sc_1": "B", "t_tf_1": True})
+        result = self.mgr.grade_session(session.id)
+        self.assertEqual(result.correct_count, 2)
+
+    def test_review_question(self):
+        exam = self.builder.build_from_question_ids(["t_sa_1"], title="复核测试")
+        session = self.mgr.create_session("stu_1", exam)
+        self.mgr.submit_answer(session.id, "t_sa_1", "5-2+3=6")
+        result = self.mgr.grade_session(session.id)
+        sa_qr = result.question_results[0]
+        self.assertEqual(sa_qr.review_info.review_status, "pending_review")
+        reviewed = self.mgr.review_question(
+            session.id, "t_sa_1",
+            reviewed_score=7.0,
+            reviewer_id="teacher_zhang",
+            review_comment="过程正确但答句不够完整",
+        )
+        self.assertEqual(reviewed.review_info.review_status, "reviewed")
+        self.assertEqual(reviewed.review_info.reviewed_score, 7.0)
+        self.assertEqual(reviewed.review_info.reviewer_id, "teacher_zhang")
+        self.assertEqual(session.status, "reviewed")
+
+    def test_close_session(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1"], title="关闭测试")
+        session = self.mgr.create_session("stu_1", exam)
+        self.mgr.submit_answer(session.id, "t_sc_1", "B")
+        self.mgr.grade_session(session.id)
+        self.mgr.close_session(session.id)
+        self.assertEqual(session.status, "closed")
+
+    def test_query_history(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1"], title="历史测试", total_score=100)
+        self.mgr.create_session("stu_A", exam)
+        self.mgr.create_session("stu_B", exam)
+        results = self.mgr.query_history(student_id="stu_A")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].student_id, "stu_A")
+
+    def test_query_by_knowledge_point(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1", "t_tf_1"], title="知识点查询")
+        session = self.mgr.create_session("stu_1", exam)
+        results = self.mgr.query_history(knowledge_point="加法")
+        self.assertGreater(len(results), 0)
+
+    def test_session_persistence(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1", "t_tf_1"], title="持久化测试")
+        session = self.mgr.create_session("stu_1", exam)
+        self.mgr.submit_answers(session.id, {"t_sc_1": "B", "t_tf_1": True})
+        self.mgr.grade_session(session.id)
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
+            tmp_path = f.name
+        try:
+            self.mgr.save_to_json(tmp_path)
+            mgr2 = SessionManager()
+            exam_papers = {exam.id: exam}
+            mgr2.load_from_json(tmp_path, exam_papers)
+            loaded = mgr2.get_session(session.id)
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.student_id, "stu_1")
+            self.assertEqual(loaded.status, "graded")
+            self.assertIsNotNone(loaded.exam_result)
+            self.assertEqual(loaded.exam_result.correct_count, 2)
+        finally:
+            os.unlink(tmp_path)
+
+    def test_status_transitions_invalid(self):
+        exam = self.builder.build_from_question_ids(["t_sc_1"], title="状态测试")
+        session = self.mgr.create_session("stu_1", exam)
+        with self.assertRaises(ValueError):
+            self.mgr.close_session(session.id)
+        with self.assertRaises(ValueError):
+            self.mgr.review_question(session.id, "t_sc_1", 5.0, "t1")
+
+
+class TestAnalyticsReview(unittest.TestCase):
+    def test_sessions_to_exam_results(self):
+        bank = create_test_bank()
+        builder = ExamBuilder(bank)
+        grader = Grader()
+        mgr = SessionManager()
+
+        exam = builder.build_from_question_ids(["t_sc_1", "t_tf_1"], title="分析测试")
+        s1 = mgr.create_session("stu_1", exam)
+        mgr.submit_answers(s1.id, {"t_sc_1": "B", "t_tf_1": True})
+        mgr.grade_session(s1.id)
+
+        analytics = Analytics(bank)
+        results = analytics.sessions_to_exam_results([s1], "stu_1")
+        self.assertEqual(len(results), 1)
+
+    def test_analyze_review_status(self):
+        bank = create_test_bank()
+        builder = ExamBuilder(bank)
+        grader = Grader()
+        analytics = Analytics(bank)
+
+        exam = builder.build_from_question_ids(["t_sc_1", "t_sa_1"], title="复核分析测试")
+        answers = [
+            StudentAnswer("t_sc_1", "B"),
+            StudentAnswer("t_sa_1", "5-2+3=6，有6个苹果"),
+        ]
+        result = grader.grade_exam(exam, answers, "stu_1")
+
+        review_stats = analytics.analyze_review_status([result])
+        self.assertGreater(review_stats["total_questions"], 0)
+        self.assertGreater(review_stats["auto_graded"], 0)
+        self.assertGreaterEqual(review_stats["pending_review"], 1)
+
+
+class TestExporterReviewAndAdaptive(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.builder = ExamBuilder(self.bank)
+        self.grader = Grader()
+        self.exporter = Exporter()
+
+    def test_result_text_shows_review_info(self):
+        exam = self.builder.build_from_question_ids(["t_sa_1"], title="复核导出测试")
+        result = self.grader.grade_exam(
+            exam, [StudentAnswer("t_sa_1", "5-2+3=6")], "stu_1"
+        )
+        content = self.exporter.export_exam_result(result, exam, format="text")
+        self.assertIn("待复核", content)
+
+    def test_result_markdown_shows_review_info(self):
+        exam = self.builder.build_from_question_ids(["t_sa_1"], title="复核导出测试")
+        result = self.grader.grade_exam(
+            exam, [StudentAnswer("t_sa_1", "5-2+3=6")], "stu_1"
+        )
+        content = self.exporter.export_exam_result(result, exam, format="markdown")
+        self.assertIn("待复核", content)
+
+    def test_result_html_shows_review_info(self):
+        exam = self.builder.build_from_question_ids(["t_sa_1"], title="复核导出测试")
+        result = self.grader.grade_exam(
+            exam, [StudentAnswer("t_sa_1", "5-2+3=6")], "stu_1"
+        )
+        content = self.exporter.export_exam_result(result, exam, format="html")
+        self.assertIn("待复核", content)
+
+    def test_export_adaptive_rationale(self):
+        wrong_book = {
+            "t_sc_1": WrongQuestion(question_id="t_sc_1", wrong_count=2, knowledge_points=["加法"]),
+        }
+        adaptive = AdaptiveBuilder(self.bank)
+        paper, rationale = adaptive.build_adaptive(
+            wrong_book=wrong_book,
+            weak_knowledge_points=[],
+            total_count=3,
+            seed=42,
+        )
+        for fmt in ["text", "markdown", "html"]:
+            content = self.exporter.export_adaptive_rationale(rationale, format=fmt)
+            self.assertGreater(len(content), 10)
+            self.assertIn("自适应组卷说明", content)
+
+
 def run_tests():
     loader = unittest.TestLoader()
     suite = unittest.TestSuite()
@@ -706,6 +1080,14 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestGrader))
     suite.addTests(loader.loadTestsFromTestCase(TestAnalytics))
     suite.addTests(loader.loadTestsFromTestCase(TestExporter))
+    suite.addTests(loader.loadTestsFromTestCase(TestReviewInfo))
+    suite.addTests(loader.loadTestsFromTestCase(TestTrueFalseSafety))
+    suite.addTests(loader.loadTestsFromTestCase(TestShortAnswerReviewStatus))
+    suite.addTests(loader.loadTestsFromTestCase(TestExamResultMaxScore))
+    suite.addTests(loader.loadTestsFromTestCase(TestAdaptiveBuilder))
+    suite.addTests(loader.loadTestsFromTestCase(TestSessionManager))
+    suite.addTests(loader.loadTestsFromTestCase(TestAnalyticsReview))
+    suite.addTests(loader.loadTestsFromTestCase(TestExporterReviewAndAdaptive))
 
     runner = unittest.TextTestRunner(verbosity=2)
     return runner.run(suite)

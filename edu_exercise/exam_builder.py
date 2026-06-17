@@ -284,3 +284,168 @@ class ExamBuilder:
             difficulty_configs=diff_configs,
         )
         return self.build(config)
+
+
+@dataclass
+class AdaptiveRationale:
+    knowledge_point_allocations: Dict[str, Dict] = field(default_factory=dict)
+    difficulty_strategy: str = ""
+    type_distribution: Dict[str, int] = field(default_factory=dict)
+    summary: str = ""
+
+    def to_dict(self) -> Dict:
+        return {
+            "knowledge_point_allocations": self.knowledge_point_allocations,
+            "difficulty_strategy": self.difficulty_strategy,
+            "type_distribution": self.type_distribution,
+            "summary": self.summary,
+        }
+
+
+class AdaptiveBuilder:
+    def __init__(self, question_bank: QuestionBank):
+        self._bank = question_bank
+
+    def build_adaptive(
+        self,
+        wrong_book: Dict[str, "WrongQuestion"],
+        weak_knowledge_points: List["KnowledgePointStats"],
+        total_count: int = 10,
+        student_id: Optional[str] = None,
+        grade: Optional[str] = None,
+        subject: Optional[str] = None,
+        title: Optional[str] = None,
+        seed: Optional[int] = None,
+    ) -> Tuple[ExamPaper, AdaptiveRationale]:
+        if seed is not None:
+            random.seed(seed)
+
+        rationale = AdaptiveRationale()
+        kp_alloc: Dict[str, Dict] = {}
+
+        wrong_kps: Dict[str, int] = {}
+        for wq in wrong_book.values():
+            for kp in wq.knowledge_points:
+                wrong_kps[kp] = wrong_kps.get(kp, 0) + wq.wrong_count
+
+        weak_kp_names: List[str] = []
+        weak_kp_mastery: Dict[str, float] = {}
+        for wkp in weak_knowledge_points:
+            weak_kp_names.append(wkp.knowledge_point)
+            weak_kp_mastery[wkp.knowledge_point] = wkp.mastery_level
+
+        all_kps = list(set(list(wrong_kps.keys()) + weak_kp_names))
+        if not all_kps:
+            all_kps = list(self._bank.get_all_knowledge_points())
+        if not all_kps:
+            raise ValueError("题库中没有可用的知识点")
+
+        kp_weights: Dict[str, float] = {}
+        for kp in all_kps:
+            w = 1.0
+            if kp in wrong_kps:
+                w += wrong_kps[kp] * 2.0
+            if kp in weak_kp_mastery:
+                w += (100.0 - weak_kp_mastery[kp]) / 20.0
+            kp_weights[kp] = w
+
+        total_weight = sum(kp_weights.values())
+        kp_counts: Dict[str, int] = {}
+        remaining = total_count
+        sorted_kps = sorted(kp_weights.keys(), key=lambda k: kp_weights[k], reverse=True)
+
+        for i, kp in enumerate(sorted_kps):
+            if i == len(sorted_kps) - 1:
+                kp_counts[kp] = remaining
+            else:
+                alloc = max(1, round(total_count * kp_weights[kp] / total_weight))
+                alloc = min(alloc, remaining - (len(sorted_kps) - i - 1))
+                alloc = max(alloc, 1)
+                kp_counts[kp] = alloc
+                remaining -= alloc
+            if remaining <= 0:
+                break
+
+        for kp in sorted_kps:
+            if kp not in kp_counts:
+                kp_counts[kp] = 0
+
+        selected: List[Question] = []
+        used_ids: set = set()
+        for kp, cnt in kp_counts.items():
+            if cnt <= 0:
+                continue
+            candidates = self._bank.filter(
+                knowledge_points=[kp],
+                grades=[grade] if grade else None,
+                subjects=[subject] if subject else None,
+                exclude_ids=used_ids,
+            )
+            if not candidates:
+                kp_alloc[kp] = {"requested": cnt, "actual": 0, "reason": "题库无匹配题目"}
+                continue
+
+            actual = min(cnt, len(candidates))
+            sampled = random.sample(candidates, actual)
+            selected.extend(sampled)
+            used_ids.update(q.id for q in sampled)
+            reason_parts = []
+            if kp in wrong_kps:
+                reason_parts.append(f"错题出现{wrong_kps[kp]}次")
+            if kp in weak_kp_mastery:
+                reason_parts.append(f"掌握度{weak_kp_mastery[kp]:.0f}%")
+            kp_alloc[kp] = {
+                "requested": cnt,
+                "actual": actual,
+                "reason": "；".join(reason_parts) if reason_parts else "一般覆盖",
+            }
+
+        if len(selected) < total_count:
+            extra_needed = total_count - len(selected)
+            extras = self._bank.filter(
+                grades=[grade] if grade else None,
+                subjects=[subject] if subject else None,
+                exclude_ids=used_ids,
+            )
+            if extras:
+                actual = min(extra_needed, len(extras))
+                extra_sampled = random.sample(extras, actual)
+                selected.extend(extra_sampled)
+
+        if not selected:
+            raise ValueError("自适应组卷未能从题库中选取任何题目")
+
+        type_dist: Dict[str, int] = {}
+        for q in selected:
+            t = q.question_type.display_name
+            type_dist[t] = type_dist.get(t, 0) + 1
+
+        weak_count = len([kp for kp in all_kps if kp in weak_kp_names or kp in wrong_kps])
+        if weak_count > total_count * 0.6:
+            diff_strategy = "侧重基础巩固，以简单和中等难度为主"
+        elif weak_count > total_count * 0.3:
+            diff_strategy = "基础与提升并重，中等难度为主"
+        else:
+            diff_strategy = "适度提升挑战，中等和较难为主"
+
+        rationale.knowledge_point_allocations = kp_alloc
+        rationale.difficulty_strategy = diff_strategy
+        rationale.type_distribution = type_dist
+
+        kp_desc = "、".join([f"{kp}({info['actual']}题)" for kp, info in kp_alloc.items() if info.get("actual", 0) > 0])
+        rationale.summary = f"本次练习共{len(selected)}题，针对{len(all_kps)}个知识点组卷。{diff_strategy}。涵盖知识点：{kp_desc}"
+
+        total_score = sum(q.score for q in selected)
+        exam_id = f"adaptive_{uuid.uuid4().hex[:12]}"
+
+        paper = ExamPaper(
+            id=exam_id,
+            title=title or "自适应练习卷",
+            questions=selected,
+            total_score=total_score,
+            grade=grade,
+            subject=subject,
+            metadata={"adaptive_rationale": rationale.to_dict()},
+        )
+
+        return paper, rationale

@@ -14,14 +14,17 @@ from .models import (
     WrongQuestion,
     PracticeRecord,
     GradingCriterion,
+    ReviewInfo,
+    PracticeSession,
 )
 from .question_bank import QuestionBank
-from .exam_builder import ExamBuilder, ExamConfig, TypeConfig, DifficultyConfig
+from .exam_builder import ExamBuilder, ExamConfig, TypeConfig, DifficultyConfig, AdaptiveBuilder, AdaptiveRationale
 from .grader import Grader
-from .analytics import Analytics
+from .analytics import Analytics, KnowledgePointStats
 from .exporter import Exporter
+from .session import SessionManager
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 __all__ = [
     "QuestionType",
@@ -39,12 +42,18 @@ __all__ = [
     "WrongQuestion",
     "PracticeRecord",
     "GradingCriterion",
+    "ReviewInfo",
+    "PracticeSession",
     "QuestionBank",
     "ExamBuilder",
     "ExamConfig",
     "TypeConfig",
     "DifficultyConfig",
+    "AdaptiveBuilder",
+    "AdaptiveRationale",
     "Grader",
     "Analytics",
+    "KnowledgePointStats",
     "Exporter",
+    "SessionManager",
 ]

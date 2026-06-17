@@ -8,8 +8,10 @@ from .models import (
     ExamResult,
     WrongQuestion,
     PracticeRecord,
+    PracticeSession,
     QuestionType,
     Difficulty,
+    ReviewInfo,
 )
 from .question_bank import QuestionBank
 
@@ -448,3 +450,68 @@ class Analytics:
             suggestions.append("表现良好，建议保持现有学习节奏，可尝试更高难度题目挑战自我。")
 
         return suggestions
+
+    def sessions_to_exam_results(
+        self,
+        sessions: List[PracticeSession],
+        student_id: Optional[str] = None,
+    ) -> List[ExamResult]:
+        results = []
+        for s in sessions:
+            if not s.exam_result:
+                continue
+            if student_id and s.student_id != student_id:
+                continue
+            results.append(s.exam_result)
+        return results
+
+    def analyze_review_status(
+        self,
+        exam_results: List[ExamResult],
+    ) -> Dict[str, Any]:
+        total = 0
+        auto_count = 0
+        pending_count = 0
+        reviewed_count = 0
+        auto_score_sum = 0.0
+        reviewed_score_sum = 0.0
+        effective_score_sum = 0.0
+        max_score_sum = 0.0
+
+        for er in exam_results:
+            for qr in er.question_results:
+                total += 1
+                max_score_sum += qr.max_score
+                if qr.review_info:
+                    status = qr.review_info.review_status
+                    if status == "auto":
+                        auto_count += 1
+                        auto_score_sum += qr.review_info.auto_score
+                        effective_score_sum += qr.score
+                    elif status == "pending_review":
+                        pending_count += 1
+                        auto_score_sum += qr.review_info.auto_score
+                        effective_score_sum += qr.score
+                    elif status == "reviewed":
+                        reviewed_count += 1
+                        auto_score_sum += qr.review_info.auto_score
+                        if qr.review_info.reviewed_score is not None:
+                            reviewed_score_sum += qr.review_info.reviewed_score
+                        effective_score_sum += qr.score
+                else:
+                    auto_count += 1
+                    effective_score_sum += qr.score
+
+        return {
+            "total_questions": total,
+            "auto_graded": auto_count,
+            "pending_review": pending_count,
+            "reviewed": reviewed_count,
+            "auto_score_total": round(auto_score_sum, 2),
+            "reviewed_score_total": round(reviewed_score_sum, 2),
+            "effective_score_total": round(effective_score_sum, 2),
+            "max_score_total": round(max_score_sum, 2),
+            "auto_score_rate": round(auto_score_sum / max_score_sum * 100, 2) if max_score_sum > 0 else 0,
+            "effective_score_rate": round(effective_score_sum / max_score_sum * 100, 2) if max_score_sum > 0 else 0,
+            "review_adjustment": round(effective_score_sum - auto_score_sum, 2),
+        }

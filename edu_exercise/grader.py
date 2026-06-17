@@ -8,6 +8,7 @@ from .models import (
     StudentAnswer,
     QuestionResult,
     ExamResult,
+    ReviewInfo,
 )
 
 
@@ -48,6 +49,7 @@ class Grader:
             completed_at=completed_at or datetime.now(),
             time_spent_seconds=time_spent_seconds,
             metadata=metadata or {},
+            _exam_total_score=exam.total_score,
         )
 
     def grade_question(
@@ -112,6 +114,7 @@ class Grader:
             feedback=feedback,
             knowledge_points=question.knowledge_points,
             question_type=QuestionType.SINGLE_CHOICE,
+            review_info=ReviewInfo(auto_score=score, review_status="auto"),
         )
 
     def _grade_multiple_choice(
@@ -177,6 +180,7 @@ class Grader:
             feedback=feedback,
             knowledge_points=question.knowledge_points,
             question_type=QuestionType.MULTIPLE_CHOICE,
+            review_info=ReviewInfo(auto_score=score, review_status="auto"),
         )
 
     def _grade_fill_blank(
@@ -242,6 +246,7 @@ class Grader:
             feedback=feedback,
             knowledge_points=question.knowledge_points,
             question_type=QuestionType.FILL_BLANK,
+            review_info=ReviewInfo(auto_score=score, review_status="auto"),
         )
 
     def _grade_true_false(
@@ -251,36 +256,51 @@ class Grader:
         sa_norm = self._normalize_answer(student_answer)
         ca_norm = self._normalize_answer(correct)
 
-        true_vals = {"true", "t", "1", "对", "正确", "是", "√", "✓"}
-        false_vals = {"false", "f", "0", "错", "错误", "否", "×", "x", "✗"}
+        true_vals = {"true", "t", "1", "对", "正确", "是"}
+        false_vals = {"false", "f", "0", "错", "错误", "否"}
 
-        sa_bool = None
         ca_bool = None
-
-        if sa_norm in true_vals:
-            sa_bool = True
-        elif sa_norm in false_vals:
-            sa_bool = False
-
         if ca_norm in true_vals:
             ca_bool = True
         elif ca_norm in false_vals:
             ca_bool = False
+        elif isinstance(correct, bool):
+            ca_bool = correct
+
+        sa_bool = None
+        answer_recognized = False
+        if isinstance(student_answer, bool):
+            sa_bool = student_answer
+            answer_recognized = True
+        elif sa_norm in true_vals:
+            sa_bool = True
+            answer_recognized = True
+        elif sa_norm in false_vals:
+            sa_bool = False
+            answer_recognized = True
+        elif sa_norm == "":
+            answer_recognized = False
+        else:
+            answer_recognized = False
 
         if ca_bool is None:
-            ca_bool = bool(ca_norm)
+            ca_bool = True
 
-        if sa_bool is None and sa_norm != "":
-            try:
-                sa_bool = bool(eval(sa_norm.capitalize()))
-            except:
-                pass
-
-        is_correct = sa_bool is not None and sa_bool == ca_bool
-        score = question.score if is_correct else 0.0
-        feedback = "回答正确！" if is_correct else self._build_incorrect_feedback(
-            question, student_answer, correct
-        )
+        if not answer_recognized and sa_norm != "":
+            is_correct = False
+            score = 0.0
+            feedback = f"答案格式无法识别（'{student_answer}'），判断题请使用：对/错、正确/错误、T/F、是/否。"
+        elif sa_bool is None:
+            is_correct = False
+            score = 0.0
+            feedback = "未作答。" + self._build_incorrect_feedback(question, student_answer, correct)
+        else:
+            is_correct = sa_bool == ca_bool
+            score = question.score if is_correct else 0.0
+            if is_correct:
+                feedback = "回答正确！"
+            else:
+                feedback = self._build_incorrect_feedback(question, student_answer, correct)
 
         return QuestionResult(
             question_id=question.id,
@@ -292,6 +312,7 @@ class Grader:
             feedback=feedback,
             knowledge_points=question.knowledge_points,
             question_type=QuestionType.TRUE_FALSE,
+            review_info=ReviewInfo(auto_score=score, review_status="auto"),
         )
 
     def _grade_short_answer(
@@ -320,6 +341,10 @@ class Grader:
                 feedback=feedback,
                 knowledge_points=question.knowledge_points,
                 question_type=QuestionType.SHORT_ANSWER,
+                review_info=ReviewInfo(
+                    auto_score=0.0,
+                    review_status="pending_review",
+                ),
             )
 
         sa_norm = self._normalize_answer(sa)
@@ -368,19 +393,25 @@ class Grader:
         if is_correct:
             feedback = "回答正确！"
         elif score > 0:
-            feedback_parts.insert(0, f"获得部分分数 {score}/{question.score} 分。")
+            feedback_parts.insert(0, f"自动评分建议 {score}/{question.score} 分（待教师复核）。")
             if matched:
-                feedback_parts.append(f"答对要点：{', '.join(matched)}。")
+                feedback_parts.append(f"命中要点：{', '.join(matched)}。")
             if missed:
                 feedback_parts.append(f"遗漏要点：{', '.join(missed)}。")
             feedback = " ".join(feedback_parts)
         else:
             feedback = self._build_incorrect_feedback(question, student_answer, correct)
+            feedback += "（自动评分 0 分，待教师复核）"
             if matched:
                 feedback += f" 注意到相关关键词：{', '.join(matched)}。"
 
         if question.analysis and not is_correct:
             feedback += f" 参考解析：{question.analysis}"
+
+        review_info = ReviewInfo(
+            auto_score=score,
+            review_status="pending_review",
+        )
 
         return QuestionResult(
             question_id=question.id,
@@ -395,6 +426,7 @@ class Grader:
             missed_key_points=missed if missed else None,
             knowledge_points=question.knowledge_points,
             question_type=QuestionType.SHORT_ANSWER,
+            review_info=review_info,
         )
 
     def _build_incorrect_feedback(

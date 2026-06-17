@@ -279,6 +279,37 @@ class StudentAnswer:
 
 
 @dataclass
+class ReviewInfo:
+    auto_score: float = 0.0
+    reviewed_score: Optional[float] = None
+    review_status: str = "auto"
+    reviewer_id: Optional[str] = None
+    review_comment: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+
+    @property
+    def effective_score(self) -> float:
+        if self.review_status == "reviewed" and self.reviewed_score is not None:
+            return self.reviewed_score
+        return self.auto_score
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "auto_score": self.auto_score,
+            "review_status": self.review_status,
+        }
+        if self.reviewed_score is not None:
+            d["reviewed_score"] = self.reviewed_score
+        if self.reviewer_id is not None:
+            d["reviewer_id"] = self.reviewer_id
+        if self.review_comment is not None:
+            d["review_comment"] = self.review_comment
+        if self.reviewed_at is not None:
+            d["reviewed_at"] = self.reviewed_at.isoformat()
+        return d
+
+
+@dataclass
 class QuestionResult:
     question_id: str
     student_answer: Any
@@ -292,9 +323,10 @@ class QuestionResult:
     missed_key_points: Optional[List[str]] = None
     knowledge_points: List[str] = field(default_factory=list)
     question_type: Optional[QuestionType] = None
+    review_info: Optional[ReviewInfo] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "question_id": self.question_id,
             "student_answer": self.student_answer,
             "correct_answer": self.correct_answer,
@@ -308,6 +340,9 @@ class QuestionResult:
             "knowledge_points": self.knowledge_points,
             "question_type": self.question_type.value if self.question_type else None,
         }
+        if self.review_info is not None:
+            d["review_info"] = self.review_info.to_dict()
+        return d
 
 
 @dataclass
@@ -322,10 +357,12 @@ class ExamResult:
     completed_at: Optional[datetime] = None
     time_spent_seconds: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    _exam_total_score: float = field(default=0.0, repr=False)
 
     def __post_init__(self):
+        questions_max = sum(r.max_score for r in self.question_results)
         if self.max_score == 0:
-            self.max_score = sum(r.max_score for r in self.question_results)
+            self.max_score = self._exam_total_score if self._exam_total_score > 0 else questions_max
         if self.total_score == 0:
             self.total_score = sum(r.score for r in self.question_results)
         if self.percentage == 0 and self.max_score > 0:
@@ -435,3 +472,48 @@ class PracticeRecord:
             "duration_minutes": self.duration_minutes,
             "tags": self.tags,
         }
+
+
+@dataclass
+class PracticeSession:
+    id: str
+    student_id: str
+    exam_paper: Optional[ExamPaper] = None
+    answers: Dict[str, Any] = field(default_factory=dict)
+    answer_timestamps: Dict[str, str] = field(default_factory=dict)
+    exam_result: Optional[ExamResult] = None
+    status: str = "created"
+    grade: Optional[str] = None
+    subject: Optional[str] = None
+    knowledge_points: List[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.now)
+    answering_started_at: Optional[datetime] = None
+    submitted_at: Optional[datetime] = None
+    graded_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "id": self.id,
+            "student_id": self.student_id,
+            "status": self.status,
+            "grade": self.grade,
+            "subject": self.subject,
+            "knowledge_points": self.knowledge_points,
+            "answers": self.answers,
+            "answer_timestamps": self.answer_timestamps,
+            "created_at": self.created_at.isoformat(),
+            "answering_started_at": self.answering_started_at.isoformat() if self.answering_started_at else None,
+            "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
+            "graded_at": self.graded_at.isoformat() if self.graded_at else None,
+            "closed_at": self.closed_at.isoformat() if self.closed_at else None,
+        }
+        if self.exam_paper:
+            d["exam_paper_id"] = self.exam_paper.id
+            d["exam_title"] = self.exam_paper.title
+            d["total_score"] = self.exam_paper.total_score
+            d["question_count"] = len(self.exam_paper.questions)
+        if self.exam_result:
+            d["result"] = self.exam_result.to_dict()
+        return d
