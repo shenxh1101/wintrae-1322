@@ -44,8 +44,34 @@ from edu_exercise import (
     PracticeSession,
     SessionManager,
     StudentProfile,
+    BatchExamItem,
+    BatchMeta,
+    SkippedStudent,
+    StudentImportResult,
+    BatchImportResult,
+    ImportReceipt,
+    BatchSummary,
+    StudentReportSummary,
+    WeakKPMatrixRow,
+    TieredStudents,
+    CommentKPSection,
+    ClassCommentPackage,
+    ClassReportSummary,
     ClassroomManager,
     AdvancedAnalytics,
+    KnowledgePointTrend,
+    PracticePlan,
+    StudentReportRender,
+    TeacherReportRender,
+    BATCH_STATUS_GENERATED,
+    BATCH_STATUS_DISTRIBUTED,
+    BATCH_STATUS_IMPORTING,
+    BATCH_STATUS_GRADED,
+    BATCH_STATUS_NEEDS_REVIEW,
+    BATCH_STATUS_REPORTED,
+    BATCH_STATUS_ARCHIVED,
+    BATCH_STATUS_FLOW,
+    BATCH_STATUS_LABEL,
 )
 
 
@@ -1485,6 +1511,225 @@ class TestSessionFullResume(unittest.TestCase):
                 os.unlink(tmp_path)
 
 
+class TestBatchLifecycleAndRegenerate(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.cm = ClassroomManager(self.bank)
+        self.cm.add_students([
+            StudentProfile("s1", "小明", "三年级", "一班"),
+            StudentProfile("s2", "小红", "三年级", "一班",
+                           wrong_book={"t_sc_1": WrongQuestion("t_sc_1", 2, ["加法"])}),
+            StudentProfile("s3", "小刚", "三年级", "一班"),
+        ])
+
+    def test_batch_status_flow(self):
+        bid, items, _ = self.cm.batch_generate_adaptive(
+            total_count=3, subject="数学", class_id="一班", seed=10
+        )
+        self.assertEqual(self.cm.get_batch_status(bid), BATCH_STATUS_GENERATED)
+        self.assertEqual(self.cm.get_batch_status_label(bid), "已生成")
+
+        self.cm.mark_batch_distributed(bid)
+        self.assertEqual(self.cm.get_batch_status(bid), BATCH_STATUS_DISTRIBUTED)
+
+        answers = {}
+        for it in items:
+            q_ans = {}
+            for q in it.exam_paper.questions:
+                if q.question_type == QuestionType.SINGLE_CHOICE:
+                    q_ans[q.id] = "B"
+                elif q.question_type == QuestionType.TRUE_FALSE:
+                    q_ans[q.id] = True
+                elif q.question_type == QuestionType.MULTIPLE_CHOICE:
+                    q_ans[q.id] = ["A", "B"]
+                elif q.question_type == QuestionType.FILL_BLANK:
+                    q_ans[q.id] = "6"
+                else:
+                    q_ans[q.id] = "答案"
+            answers[it.student_id] = q_ans
+
+        imp = self.cm.batch_import_answers(bid, answers)
+        self.assertIn(self.cm.get_batch_status(bid), (BATCH_STATUS_IMPORTING, BATCH_STATUS_GRADED))
+
+        self.cm.batch_grade(bid)
+        status = self.cm.get_batch_status(bid)
+        self.assertIn(status, (BATCH_STATUS_GRADED, BATCH_STATUS_NEEDS_REVIEW))
+
+        self.cm.mark_batch_archived(bid)
+        self.assertEqual(self.cm.get_batch_status(bid), BATCH_STATUS_ARCHIVED)
+
+    def test_stage_queries(self):
+        bid, items, _ = self.cm.batch_generate_adaptive(
+            total_count=3, subject="数学", class_id="一班", seed=11
+        )
+        not_submitted = self.cm.get_not_submitted_students(bid)
+        self.assertEqual(len(not_submitted), 3)
+
+        one_item = items[0]
+        q_ans = {}
+        for q in one_item.exam_paper.questions:
+            if q.question_type == QuestionType.SINGLE_CHOICE:
+                q_ans[q.id] = "B"
+            elif q.question_type == QuestionType.TRUE_FALSE:
+                q_ans[q.id] = True
+            elif q.question_type == QuestionType.MULTIPLE_CHOICE:
+                q_ans[q.id] = ["A", "B"]
+            elif q.question_type == QuestionType.FILL_BLANK:
+                q_ans[q.id] = "6"
+            else:
+                q_ans[q.id] = "答"
+        self.cm.batch_import_answers(bid, {one_item.student_id: q_ans})
+
+        not_submitted2 = self.cm.get_not_submitted_students(bid)
+        self.assertEqual(len(not_submitted2), 2)
+
+        failed = self.cm.get_import_failed_students(bid)
+        self.assertIsInstance(failed, list)
+
+        need_review = self.cm.get_needs_teacher_review_students(bid)
+        self.assertIsInstance(need_review, list)
+
+    def test_regenerate_for_students(self):
+        bid, items, skipped = self.cm.batch_generate_adaptive(
+            student_ids=["s1", "s2"],
+            total_count=3, subject="数学", seed=12
+        )
+        self.assertEqual(len(items), 2)
+        old_s1_session = items[0].session_id
+        self.assertIsNotNone(old_s1_session)
+
+        self.cm.add_student(StudentProfile("s_new", "新同学", "三年级", "一班"))
+
+        new_items, new_skipped = self.cm.regenerate_for_students(
+            bid,
+            student_ids=["s1", "s_new", "s_not_exists"],
+            seed_offset=2000,
+        )
+        self.assertGreaterEqual(len(new_items), 1)
+        s1_item_new = next(it for it in new_items if it.student_id == "s1")
+        self.assertEqual(s1_item_new.source_type, "regenerated")
+        self.assertEqual(s1_item_new.regenerated_from, old_s1_session)
+        self.assertIsNotNone(s1_item_new.regenerated_at)
+
+        s_new_item = next((it for it in new_items if it.student_id == "s_new"), None)
+        self.assertIsNotNone(s_new_item)
+
+        skip_ids = {s.student_id for s in new_skipped}
+        self.assertIn("s_not_exists", skip_ids)
+
+        all_items = self.cm.get_batch_items(bid)
+        self.assertEqual(len(all_items), 3)
+
+
+class TestBatchImportIdempotentStrictAndReport(unittest.TestCase):
+    def setUp(self):
+        self.bank = create_test_bank()
+        self.cm = ClassroomManager(self.bank)
+        self.cm.add_students([
+            StudentProfile("s1", "小明", "三年级", "一班"),
+            StudentProfile("s2", "小红", "三年级", "一班"),
+            StudentProfile("s3", "小刚", "三年级", "一班"),
+        ])
+        self.bid, self.items, _ = self.cm.batch_generate_adaptive(
+            total_count=3, subject="数学", class_id="一班", seed=50
+        )
+
+    def _mk_answers(self, items, offset=0):
+        answers = {}
+        for it in items:
+            q_ans = {}
+            qs = it.exam_paper.questions
+            for idx, q in enumerate(qs):
+                if q.question_type == QuestionType.SINGLE_CHOICE:
+                    q_ans[q.id] = "B" if (idx + offset) % 2 == 0 else "C"
+                elif q.question_type == QuestionType.TRUE_FALSE:
+                    q_ans[q.id] = True
+                elif q.question_type == QuestionType.MULTIPLE_CHOICE:
+                    q_ans[q.id] = ["A", "B"]
+                elif q.question_type == QuestionType.FILL_BLANK:
+                    q_ans[q.id] = "6"
+                else:
+                    q_ans[q.id] = "答案" + str(offset)
+            answers[it.student_id] = q_ans
+        return answers
+
+    def test_idempotent_no_overwrite(self):
+        answers = self._mk_answers(self.items, 0)
+        imp1 = self.cm.batch_import_answers(self.bid, answers, idempotent=True)
+        self.assertEqual(imp1.success_count + imp1.partial_count, 3)
+
+        s1_session = self.cm.get_session_manager().get_session(self.items[0].session_id)
+        s1_first = dict(s1_session.answers)
+
+        answers2 = self._mk_answers(self.items, 99)
+        imp2 = self.cm.batch_import_answers(self.bid, answers2, idempotent=True)
+        self.assertEqual(imp2.skipped_count, 3)
+        for r in imp2.per_student:
+            self.assertTrue(r.was_processed)
+            self.assertTrue(any("幂等" in e or "已存在" in e for e in r.errors))
+
+        s1_session_2 = self.cm.get_session_manager().get_session(self.items[0].session_id)
+        self.assertEqual(s1_session_2.answers, s1_first)
+
+    def test_strict_mode_rejects_student(self):
+        answers = self._mk_answers(self.items, 0)
+        answers["s1"]["BAD_QID"] = "X"
+        imp = self.cm.batch_import_answers(self.bid, answers, strict_mode=True, idempotent=False)
+        s1_res = next(r for r in imp.per_student if r.student_id == "s1")
+        self.assertEqual(s1_res.status, "error")
+        self.assertTrue(any("严格模式" in e for e in s1_res.errors))
+        s2_res = next(r for r in imp.per_student if r.student_id == "s2")
+        self.assertEqual(s2_res.status, "success")
+
+    def test_batch_summary_and_receipt(self):
+        answers = self._mk_answers(self.items, 0)
+        imp = self.cm.batch_import_answers(self.bid, answers)
+
+        receipt = self.cm.build_import_receipt(imp, report_link="https://example.com/r/1")
+        self.assertEqual(receipt.batch_id, self.bid)
+        self.assertEqual(receipt.report_link, "https://example.com/r/1")
+        self.assertGreaterEqual(receipt.total_submitted, 3)
+        self.assertIsInstance(receipt.to_dict(), dict)
+        self.assertIn("per_student", receipt.to_dict())
+
+        self.cm.batch_grade(self.bid)
+        self.cm.generate_class_report(self.bid, report_link="https://example.com/r/2")
+
+        summary = self.cm.build_batch_summary(self.bid)
+        self.assertEqual(summary.batch_id, self.bid)
+        self.assertGreaterEqual(summary.student_total, 3)
+        self.assertGreaterEqual(summary.student_graded, 1)
+        self.assertEqual(summary.report_link, "https://example.com/r/2")
+        self.assertGreater(len(summary.status_label), 0)
+        d = summary.to_dict()
+        self.assertIn("per_student", d)
+        self.assertIn("student_not_submitted", d)
+
+    def test_class_comment_package(self):
+        answers = self._mk_answers(self.items, 0)
+        self.cm.batch_import_answers(self.bid, answers)
+        self.cm.batch_grade(self.bid)
+
+        pkg = self.cm.generate_class_comment_package(self.bid)
+        self.assertEqual(pkg.batch_id, self.bid)
+        self.assertIsInstance(pkg.class_overview, dict)
+        self.assertIn("student_count", pkg.class_overview)
+        self.assertIsInstance(pkg.kp_sections, list)
+        self.assertIsInstance(pkg.all_affected_students, list)
+        self.assertIsInstance(pkg.recommended_review_order, list)
+
+        if pkg.kp_sections:
+            sec = pkg.kp_sections[0]
+            self.assertEqual(sec.suggested_order, 1)
+            self.assertGreater(len(sec.teaching_tips), 0)
+            self.assertIsInstance(sec.affected_students, list)
+            self.assertIsInstance(sec.typical_wrong_questions, list)
+
+        d = pkg.to_dict()
+        self.assertIn("kp_sections", d)
+        self.assertIn("recommended_review_order", d)
+
+
 class TestAdvancedAnalytics(unittest.TestCase):
     def setUp(self):
         self.bank = create_test_bank()
@@ -1638,6 +1883,8 @@ def run_tests():
     suite.addTests(loader.loadTestsFromTestCase(TestSessionResume))
     suite.addTests(loader.loadTestsFromTestCase(TestClassroomManager))
     suite.addTests(loader.loadTestsFromTestCase(TestSessionFullResume))
+    suite.addTests(loader.loadTestsFromTestCase(TestBatchLifecycleAndRegenerate))
+    suite.addTests(loader.loadTestsFromTestCase(TestBatchImportIdempotentStrictAndReport))
     suite.addTests(loader.loadTestsFromTestCase(TestAdvancedAnalytics))
 
     runner = unittest.TextTestRunner(verbosity=2)
